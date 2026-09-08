@@ -78,7 +78,7 @@ describe('classifyMatch', () => {
 describe('Normalizer', () => {
   it('JSON 이 아닌 줄을 버리지 않고 직전 줄의 시각을 물려준다', () => {
     // panic, 스택트레이스, 기동 배너는 장애 시점에 제일 보고 싶은 줄이다.
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const first = n.push(
       lineEvent(`{"time":"2026-09-04T02:19:24.100000000Z","msg":"before","rid":"${RID}"}`),
     )
@@ -91,7 +91,7 @@ describe('Normalizer', () => {
   })
 
   it('스트림(호스트+파일)별로 seq 를 센다', () => {
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const a1 = n.push(lineEvent('x', { host: 'kw41' }))
     const b1 = n.push(lineEvent('x', { host: 'kw42' }))
     const a2 = n.push(lineEvent('x', { host: 'kw41' }))
@@ -102,7 +102,7 @@ describe('Normalizer', () => {
   it('실제로 쓴 별칭 키만 usedKeys 에 담는다', () => {
     // 별칭 목록 전체를 빼면 msg 와 event 가 같이 있는 줄에서
     // event 객체가 통째로 사라진다 (event 는 MSG_KEYS 의 별칭이라서).
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const rec = n.push(
       lineEvent('{"time":"2026-09-04T02:19:24Z","msg":"m","event":{"kind":"k"},"rid":"r"}'),
     )
@@ -116,7 +116,7 @@ describe('나노초 정렬', () => {
     // 파이썬 구현은 마이크로초까지만 다뤄서 이 구분을 못 한다.
     // Date 로만 정렬하면 두 줄이 동순위가 되어 seq(파일 내 순서)로 떨어지고,
     // 서로 다른 호스트의 줄이면 인과 순서가 뒤집힌다.
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const later = n.push(
       lineEvent(`{"time":"2026-09-04T02:19:24.568999999Z","msg":"later","rid":"${RID}"}`, {
         host: 'kw41',
@@ -142,7 +142,7 @@ describe('나노초 정렬', () => {
   })
 
   it('시각을 못 읽은 줄은 맨 뒤로 간다', () => {
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const noTs = n.push(lineEvent(`starting up ${RID}`))
     const withTs = n.push(
       lineEvent(`{"time":"2026-09-04T02:19:24Z","msg":"m","rid":"${RID}"}`, {
@@ -164,7 +164,7 @@ describe('collapseRuns', () => {
     // json.dumps(sort_keys=True) 로 지문을 만드는데 JSON.stringify 에는
     // 그런 옵션이 없다. 그냥 stringify 하면 같은 내용인데 지문이 갈리고
     // 반복 접기가 아무 에러 없이 안 먹는다.
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const a = n.push(
       lineEvent(`{"ts":"2026-09-04T02:19:26Z","msg":"poll","rid":"${RID}","state":"STARTED"}`),
     )
@@ -182,7 +182,7 @@ describe('collapseRuns', () => {
   it('상태가 바뀌면 접지 않는다', () => {
     // msg 만 보고 접으면 STARTED → SUCCESS 전이까지 뭉개지는데,
     // 그게 정작 제일 보고 싶은 줄이다.
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const started = n.push(
       lineEvent(`{"ts":"2026-09-04T02:19:26Z","msg":"poll","rid":"${RID}","state":"STARTED"}`),
     )
@@ -195,7 +195,7 @@ describe('collapseRuns', () => {
 
   it('중간에 다른 이벤트가 끼면 거기서 끊긴다', () => {
     // "폴링하다가 뭔가 일어나고 다시 폴링" 이 한 덩어리로 뭉개지지 않아야 한다.
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const poll = (ts: string) =>
       n.push(lineEvent(`{"ts":"${ts}","msg":"poll","rid":"${RID}"}`))
     const other = n.push(lineEvent(`{"ts":"2026-09-04T02:19:28Z","msg":"boom","rid":"${RID}"}`))
@@ -217,7 +217,7 @@ describe('collapseRuns', () => {
   })
 
   it('다른 호스트의 같은 줄은 접지 않는다', () => {
-    const n = new Normalizer('test', 'rid', RID)
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const body = `{"ts":"2026-09-04T02:19:26Z","msg":"poll","rid":"${RID}"}`
     const kept = collapseRuns([
       n.push(lineEvent(body, { host: 'kw41' })),

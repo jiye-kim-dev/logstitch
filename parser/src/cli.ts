@@ -17,7 +17,7 @@ import { FAR_FUTURE_NANOS } from './fields.ts'
 import { Normalizer, collapseRuns } from './records.ts'
 import { renderJsonl, renderSummary, renderText } from './render.ts'
 import { isWeakMatch } from './types.ts'
-import type { CollectorEvent, HostResult, LogRecord } from './types.ts'
+import type { CollectorEvent, Criterion, HostResult, LogRecord } from './types.ts'
 
 interface WhereClause {
   key: string
@@ -102,9 +102,9 @@ async function main(): Promise<number> {
   const seenArea = new Set<string>()
 
   let normalizer: Normalizer | null = null
+  let app = ''
   let environment = ''
-  let field = ''
-  let value = ''
+  let criteria: Criterion[] = []
   let malformed = 0
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
@@ -121,11 +121,20 @@ async function main(): Promise<number> {
     }
 
     switch (event.type) {
-      case 'meta':
+      case 'meta': {
+        app = event.app ?? ''
         environment = event.environment ?? ''
-        field = event.field
-        value = event.value
-        normalizer = new Normalizer(environment, field, value, opt.embed)
+        criteria = event.fields ?? []
+        // 주 식별자만 매칭 종류 판정에 쓴다. 나머지 조건은 수집기가 원격에서
+        // 교집합으로 이미 걸러냈으므로 여기서 다시 볼 필요가 없다.
+        const primary = criteria[0] ?? { field: '', value: '' }
+        normalizer = new Normalizer({
+          app,
+          environment,
+          field: primary.field,
+          value: primary.value,
+          embed: opt.embed,
+        })
         // 수집기가 인벤토리 순서를 알려주면 그걸 쓴다. 없으면 아래에서
         // 도착 순서로 채워지는데, 그건 실행마다 달라질 수 있다.
         for (const area of event.areas ?? []) {
@@ -135,6 +144,7 @@ async function main(): Promise<number> {
           }
         }
         break
+      }
 
       case 'line': {
         if (normalizer === null) {
@@ -205,10 +215,11 @@ async function main(): Promise<number> {
     process.stderr.write(`${line}\n`)
   }
 
-  const summaryOptions = { environment, areaOrder, color: opt.color }
+  const summaryOptions = { app, environment, areaOrder, criteria, color: opt.color }
 
   if (kept.length === 0) {
-    err(`결과 없음: ${field}=${value}`)
+    const shown = criteria.map((c) => `${c.field}=${c.value}`).join(' AND ')
+    err(`결과 없음: ${shown}`)
     renderSummary(kept, hosts, summaryOptions, err)
     return 1
   }

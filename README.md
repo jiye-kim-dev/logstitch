@@ -1,6 +1,6 @@
 # logstitch
 
-여러 노드에 흩어진 JSON 로그를 특정 필드값(rid 등)으로 긁어와 UTC 시간순으로 병합
+여러 노드에 흩어진 JSON 로그를 특정 필드값(rid 등)으로 긁어와 UTC 시간순으로 병합한다.
 
 `python-practice/ssh-logtrace` 의 파이썬 구현을 **Go 수집기 + TypeScript 파서**로
 이식한 것이다. 두 조각으로 나눈 이유는 하나다.
@@ -11,7 +11,7 @@
 TS 에** 두었다. 로그 포맷 하나 바뀔 때마다 수집기 바이너리를 다시 배포하지 않아도 된다.
 
 ```
-logstitch --rid abc123 | logstitch-parse
+logstitch --app ai-stt --env prod --rid abc123 | logstitch-parse
 ```
 
 - **자격증명을 다루지 않는다** — 시스템 `ssh` 를 그대로 exec 하므로 `~/.ssh/config`,
@@ -22,9 +22,13 @@ logstitch --rid abc123 | logstitch-parse
 ## 구성
 
 ```
+apps.json                  앱별 필수 필드 (환경 무관, 커밋함)
+inventory.<앱>.<환경>.json    호스트와 로그 경로 (환경별, 커밋 안 함)
+
 collector/                 Go — 로그 내용을 모른다
   main.go                  CLI, 인자 검증, 타깃 전개, 종료코드
-  inventory/               인벤토리 로딩·검증
+  apps/                    앱 설정 로딩·검증
+  inventory/               인벤토리 경로 해석, 로딩·검증
   remote/                  원격 bash 스크립트 생성, 셸 인용
   collect/                 ssh 팬아웃, NDJSON 스트리밍
 
@@ -39,7 +43,7 @@ test/                      가짜 ssh + 픽스처 + 파이썬 대조
 ```
 
 `main.go` 는 CLI 관심사(인자 파싱, 검증, 종료코드)만 두고 전송 계층은 별도
-패키지(`inventory`, `remote`, `collect`)에 둔다. 그 경계는 컴파일러가 강제한다.
+패키지(`apps`, `inventory`, `remote`, `collect`)에 둔다. 그 경계는 컴파일러가 강제한다.
 2차에서 stdin JSON 진입점을 붙일 때도 `main.go` 만 건드리면 된다.
 
 경계선이 정확히 어디인지가 이 저장소를 읽는 열쇠다.
@@ -68,21 +72,21 @@ test/                      가짜 ssh + 픽스처 + 파이썬 대조
 ```
 Host req-01
   HostName 192.0.2.11
-  User jiemu
+  User myuser
   IdentityFile ~/.ssh/id_logstitch
 ```
 
 > `BatchMode yes` 를 **config 에 넣지 말 것.** 넣으면 다음 단계의 `ssh-copy-id` 가
 > 패스워드를 물어보지 못해서 실패한다. logstitch 는 그 옵션을 실행 시 명령줄로 넘긴다.
 
-**2. 키 생성** — 노트북에서 한 번만 해주면 됨 ㅇㅂㅇ
+**2. 키 생성** — 노트북에서 한 번만
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/id_logstitch -C logstitch
 ssh-add --apple-use-keychain ~/.ssh/id_logstitch   # macOS: 패스프레이즈 한 번만
 ```
 
-**3. 공개키 배포** — 반드시 **서버 별칭으로** 한다
+**3. 공개키 배포** — 반드시 **별칭으로** 한다
 
 ```sh
 ssh-copy-id -i ~/.ssh/id_logstitch.pub req-01
@@ -111,53 +115,77 @@ Host req-* sch-* rcv-*
   ControlPersist 10m
 ```
 
-**5. 인벤토리 작성**
+**5. 앱 설정 작성** (`apps.json`)
 
-인벤토리는 **환경별로 파일을 나눈다.** 파일 이름이 환경을 나타낸다.
+애플리케이션별로 **반드시 받아야 하는 필드**를 적는다. 하나라도 빠지면
+스크립트가 돌지 않는다.
+
+```json
+{
+  "apps": {
+    "app-01":    { "required": ["rid"] },
+    "app-02": { "required": ["node_id"] }
+  }
+}
+```
+
+필수 필드는 앱의 **로그 스키마 속성이라 환경과 무관하다.** 그래서 인벤토리가
+아니라 이 파일 하나에 모은다 — prod 에 필드를 추가하고 stage 에 빠뜨리는
+드리프트가 원리적으로 생기지 않는다. 호스트도 경로도 없으니 커밋해도 된다.
+
+**`required` 는 순서가 의미를 가진다.** 원격에서 grep 을 이 순서로 이어붙이므로,
+가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
+
+**6. 인벤토리 작성**
+
+인벤토리는 **앱과 환경별로 파일을 나눈다.** 파일 이름이 그 둘을 나타낸다.
 
 ```
-inventory.<기본이름>.<환경>.json
+<기본이름>.<앱>.<환경>.json
 
-inventory.app.prod.json
-inventory.app.stage.json
-inventory.app.dev.json
+inventory.ai-stt.prod.json
+inventory.ai-stt.stage.json
+inventory.forwarder.prod.json
 ```
 
 ```sh
-cp inventory.example.json inventory.app.prod.json
+cp inventory.example.json inventory.ai-stt.prod.json
 ```
 
-`-i` 는 확장자와 환경을 뺀 **기본 이름**을, `--env` 는 환경을 받는다.
-둘을 합쳐 읽을 파일을 정한다.
+`-i` 는 확장자·앱·환경을 뺀 **기본 이름**이고(기본값 `inventory`), `--app` 과
+`--env` 가 나머지를 채운다.
 
 ```sh
-logstitch --env prod -i inventory.app --rid abc123
-  → inventory.app.prod.json
+logstitch --app ai-stt --env prod --rid abc123
+  → inventory.ai-stt.prod.json
 ```
-
-`-i` 에 `.json` 을 붙여도 떼고 쓴다. 그게 없으면
-`inventory.app.json.prod.json` 같은 경로가 나온다. (나중에 확장자 들어온 채로 실행하면 제거하는 방향으로 수정해도 좋을듯함)
-
-파일 안에는 환경을 적지 않는다. 두 곳에 적으면 서로 어긋날 수 있고, 실행할
-때 같은 값을 두 번 넘겨야 해서 방어가 아니라 중복이 된다.
 
 `hosts` 는 위에서 만든 ssh 별칭, `paths` 는 원격 셸이 확장하는 glob 이다.
 로테이션된 `.gz` 도 잡히도록 `*` 를 넉넉히 준다.
 
-**환경 이름은 코드가 정하지 않는다.** 파일을 만들면 그게 환경이다.
-`qa`, `local` 처럼 필요한 걸 그냥 추가하면 된다.
+파일 안에는 앱도 환경도 적지 않는다. 두 곳에 적으면 서로 어긋날 수 있고,
+실행할 때 같은 값을 두 번 넘겨야 해서 방어가 아니라 중복이 된다.
 
-`--env` 는 필수다. 없거나 해당 파일이 없으면 **실제로 있는 환경을 알려준다** —
-오타인지 아직 안 만든 환경인지 바로 보인다.
+**앱과 환경 이름은 코드가 정하지 않는다.** `apps.json` 에 항목을 만들고
+그 이름으로 인벤토리 파일을 만들면 그게 앱·환경이다.
+
+### 없으면 아무것도 돌지 않는다
+
+`--app`, `--env`, 그리고 앱의 필수 필드 — 하나라도 없으면 ssh 에 붙지 않고
+거부한다. 에러는 **실제로 뭘 쓸 수 있는지** 알려준다.
 
 ```sh
-$ logstitch --env dev -i inventory.app --rid abc
-[오류] 인벤토리 파일이 없습니다: inventory.app.dev.json
-       (-i inventory.app, --env dev)
-       쓸 수 있는 환경: prod, stage
+$ logstitch --env test --rid abc
+[오류] --app 이 필요합니다 (apps.json 에 정의된 앱: ai-stt, forwarder)
 
-$ logstitch -i inventory.app --rid abc
-[오류] --env 가 필요합니다 (쓸 수 있는 환경: prod, stage)
+$ logstitch --app ai-stt --rid abc
+[오류] --env 가 필요합니다 (ai-stt 앱에 쓸 수 있는 환경: prod, stage)
+
+$ logstitch --app forwarder --env prod --field stream_key=abc
+[오류] 앱 "forwarder" 의 필수 필드가 빠졌습니다: session_id, node_id
+       필요한 필드 전체: stream_key, session_id, node_id
+       예: logstitch --app forwarder --env prod --field stream_key=<값> \
+             --field session_id=<값> --field node_id=<값>
 ```
 
 ## 빌드
@@ -183,16 +211,14 @@ export PATH="$PWD/.bin:$PATH"
 
 ## 사용
 
-`--env` 와 `-i` 는 매번 붙어다니므로 셸 변수로 묶어두면 편하다.
+`--app` 과 `--env` 는 매번 붙어다니므로 셸 변수로 묶어두면 편하다.
 
 ```sh
-LS="logstitch --env prod -i inventory.app"
+LS="logstitch --app ai-stt --env prod"
 
 $LS --rid abc123 | logstitch-parse                  # 기본
 $LS --rid abc123 --dry-run                          # 접속 없이 원격 명령만 확인
 $LS --rid abc123 --area scheduler | logstitch-parse  # 특정 영역만
-$LS --rid abc123 --host scheduler=kr01kw49 | logstitch-parse
-                                                     # 인벤토리 밖 호스트 추가
 $LS --rid abc123 --after 20 | logstitch-parse        # 스택트레이스 뒤 20줄까지
 $LS --field content_id=555 | logstitch-parse         # 임의 필드로 검색
 
@@ -201,11 +227,23 @@ $LS --rid abc123 | logstitch-parse --value-cap 0     # 긴 값(ffmpeg 명령줄 
 $LS --rid abc123 | logstitch-parse --json > t.jsonl  # 나중에 시각화용
 ```
 
+필수 필드가 여러 개인 앱은 전부 줘야 한다.
+
+```sh
+logstitch --app forwarder --env prod \
+  --field stream_key=abc --field session_id=s1 --field node_id=n7 | logstitch-parse
+```
+
+`required` 밖의 필드를 더 주면 **추가 교집합 조건**으로 붙는다 (임시 조회용).
+
+```sh
+$LS --rid abc123 --field cpk=tenant-a | logstitch-parse
+```
+
 처음 돌릴 땐 `--dry-run` 으로 원격 명령을 눈으로 확인하고 시작하는 걸 권한다.
 
 `--area` 를 빼고 전 영역을 긁으면 요약에 **구간 갭**이 나온다. 어느 구간에서
 시간이 비었는지가 이 도구의 목적이고, 갭이 5초를 넘으면 빨간색으로 찍힌다.
-
 
 ## 동작
 
@@ -215,6 +253,23 @@ $LS --rid abc123 | logstitch-parse --json > t.jsonl  # 나중에 시각화용
         ↓ NDJSON
 파서             JSON 파싱 → 별칭 해석 → 타임스탬프 → 매칭 판정 → 정렬 → 반복 접기
 ```
+
+### 조건이 여러 개면 원격에서 교집합
+
+`required` 가 여러 개인 앱은 grep 을 **파이프로 이어붙여** 원격에서 교집합을
+계산한다. 모든 값이 같은 줄에 있어야 남는다.
+
+```sh
+grep -F -e abc | grep -F -e s1 | grep -F -e n7
+```
+
+값마다 별도 스크립트를 돌려 로컬에서 교집합을 내도 결과는 같지만, ssh 왕복이
+값 개수만큼 늘고 **걸러지기 전 줄이 전부 전송된다.** 이어붙이면 왕복 1회에
+원격에서 이미 줄어든 것만 넘어온다.
+
+그래서 `--after` 는 조건이 하나일 때만 쓸 수 있다. 이어붙인 grep 에서는 앞
+grep 이 붙인 컨텍스트 줄이 뒤 grep 에 걸리지 않아 그대로 사라지므로, 조용히
+무효가 되는 대신 거부한다.
 
 **왜 원격에서 정확히 필터하지 않는가** — `grep -F '"rid":"abc"'` 는 직렬화 형태
 (콜론 뒤 공백, 키 순서, 숫자/문자열)에 의존해서 모듈 언어가 다르면 조용히 안 걸린다.
@@ -283,16 +338,27 @@ export const CALLER_KEYS = ['source', 'caller', ...]
   **정렬용 나노초(`bigint`)를 따로** 들고 다닌다. 같은 밀리초 안의 인과 순서를 잃지 않는다.
 - **`--max-lines`** (기본 50000). 한 호스트가 거대한 결과를 뱉으면 상한에서 끊고
   요약에 잘렸다고 표시한다. 파이썬에는 상한이 없어서 메모리로 다 받았다.
-- **환경(dev/stage/prod)이 1급 개념이 되었다.** 인벤토리를
-  `<기본이름>.<환경>.json` 으로 나누고 `--env` 로 고른다. 없는 환경을 주면
-  실제로 있는 환경을 알려준다. 수집한 환경은 `meta` 이벤트로 파서에
-  전달되어 요약 머리글과 JSONL 레코드에 남는다.
-- **`--host` 로 인벤토리 밖 호스트 추가**, 그리고 그에 따른 호스트명 검증(아래).
+- **앱과 환경이 1급 개념이 되었다.** 인벤토리를 `<기본이름>.<앱>.<환경>.json`
+  으로 나누고 `--app`/`--env` 로 고른다. 없는 걸 주면 실제로 있는 것을
+  알려준다. 수집한 앱·환경은 `meta` 이벤트로 파서에 전달되어 요약 머리글과
+  JSONL 레코드에 남는다.
+- **앱별 필수 필드** (`apps.json`). 앱마다 반드시 받아야 하는 필드가 다르고,
+  하나라도 빠지면 ssh 에 붙지 않는다. 파이썬은 `--field` 하나만 받았고 그게
+  뭐든 통과했다.
+- **조건이 여러 개면 원격에서 교집합.** grep 을 파이프로 이어붙여 ssh 왕복
+  1회에 처리한다.
 - **`_match` 가 문자열이 아니라 union.** 파이썬은 `"nested:a.b[0]"` 문자열을 만들고
   렌더링 시점에 다시 파싱했다. 이제 `{ kind: 'nested', path: 'a.b[0]' }` 다.
 - **줄 길이 제한이 없다.** 파이썬은 stdout 을 통째로 읽었고, Go 는 `bufio.Scanner` 대신
   `Reader.ReadString` 을 쓴다. Scanner 는 64KB 에서 줄을 자르는데 스택트레이스가 박힌
   JSON 로그 한 줄은 그걸 넘을 수 있다.
+
+**빠진 것**:
+
+- **라운드2(파생키 재조회)가 없다.** 1차 범위에서 제외했다. 인벤토리의 `followup`
+  블록은 읽어도 무시하므로 기존 인벤토리 파일이 그대로 로드된다.
+  (참고: `inventory.ai-stt.json` 에는 애초에 `followup` 이 없어서 파이썬에서도
+  라운드2 가 돌지 않고 있었다. 예전 README 의 「동작」 설명과 설정이 드리프트한 상태였다.)
 
 **남은 차이**:
 
@@ -309,11 +375,15 @@ export const CALLER_KEYS = ['source', 'caller', ...]
   명령으로 실행된다. `content_id` 에 들어가는 `@` 가 이걸로 통과한다.
 - **경로는 인벤토리에만 있다.** 클라이언트가 임의 경로를 지정할 수 없다.
   2차에서 웹 백엔드를 붙일 때도 인벤토리 소유권은 수집기에 두어야 한다.
-- **호스트 이름은 영숫자로 시작해야 한다** (`^[A-Za-z0-9][A-Za-z0-9._-]*$`).
-  호스트 문자열은 `ssh` 의 argv 로 들어가므로 `-` 로 시작하면 ssh 가 옵션으로
-  파싱한다. `-oProxyCommand=...` 하나로 수집기가 도는 머신에서 임의 명령이 실행된다.
-  인벤토리 안의 호스트는 사람이 쓴 파일이라 노출이 없었지만, `--host` 로 바깥에서
-  받는 순간 생기는 문제다.
+- **접속 대상은 인벤토리에만 있다.** 명령줄로 호스트를 넘기는 경로가 없다.
+  `--area` 는 인벤토리에 있는 것을 줄이기만 한다. 어디에 붙는지가 파일 하나에만
+  적혀 있어야 검토가 가능하다.
+- **인벤토리의 호스트 이름은 영숫자로 시작해야 한다**
+  (`^[A-Za-z0-9][A-Za-z0-9._-]*$`, 로딩 때 검사). 호스트 문자열은 `ssh` 의 argv 로
+  들어가므로 `-` 로 시작하면 ssh 가 옵션으로 파싱한다 —
+  `-oProxyCommand=...` 하나로 수집기가 도는 머신에서 임의 명령이 실행된다.
+  인벤토리는 사람이 쓰는 파일이라 외부 입력은 아니지만, 실패가 조용하고 심각해서
+  걸러낸다. 같은 호스트가 두 번 적힌 것도 함께 거부한다 (줄이 두 번 수집된다).
 - **`grep -F`** 로 고정 문자열 검색만 한다. 검색값이 정규식으로 해석되지 않는다.
 
 ## 설계상 지켜둔 것들
@@ -326,7 +396,7 @@ export const CALLER_KEYS = ['source', 'caller', ...]
 - **구간 갭을 계산해서 보여준다.** 어느 구간에서 시간이 비었는지가 이 도구의 목적이다.
 - **`seq` 로 원래 스트림 순서를 유지한다.** 같은 시각에 찍힌 줄들의 인과 순서가
   정렬 때문에 뒤집히지 않는다.
-- **수집기는 stateless 하다.** 라운드 개념도, 캐시도, DB 도 없다. (고도화시 설계 방향에 따라 다를 예정임)
+- **수집기는 stateless 하다.** 라운드 개념도, 캐시도, DB 도 없다.
 
 ## 테스트
 

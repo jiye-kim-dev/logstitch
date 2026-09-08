@@ -2,12 +2,9 @@
   "_comment": [
     "inventory json 파일 예시",
     "",
-    "환경은 파일 이름에 있다. <기본이름>.<환경>.json 으로 나눠 쓴다:",
-    "  inventory.ai-stt.prod.json / .stage.json / .dev.json",
+    "앱과 환경은 파일 이름에 있다. <기본이름>.<앱>.<환경>.json 으로 나눠 쓴다",
+    "앱별 필수 필드는 apps.json 에 따로 적는다 (환경 무관).",
     "",
-    "이 파일을 복사해서 쓴다:",
-    "  cp inventory.example.json inventory.ai-stt.prod.json",
-    "  logstitch --env prod -i inventory.ai-stt --rid <값>"
   ],
   "ssh_opts": [
     "-o",

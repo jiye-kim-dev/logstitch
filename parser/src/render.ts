@@ -5,7 +5,7 @@
  */
 
 import { MAX_NEST_DEPTH } from './fields.ts'
-import type { HostResult, LogRecord, MatchKind, Ts } from './types.ts'
+import type { Criterion, HostResult, LogRecord, MatchKind, Ts } from './types.ts'
 
 const COLORS: Record<string, string> = {
   reset: '\x1b[0m',
@@ -205,6 +205,7 @@ export function renderJsonl(records: LogRecord[], write: (line: string) => void)
         tsNanos: record.ts === null ? null : record.ts.nanos.toString(),
         tsInherited: record.tsInherited,
         tsKey: record.tsKey,
+        app: record.app,
         environment: record.environment,
         area: record.area,
         host: record.host,
@@ -227,10 +228,16 @@ export function renderJsonl(records: LogRecord[], write: (line: string) => void)
 }
 
 export interface SummaryOptions {
-  /** 어느 환경 수집인지. 요약 머리글에 찍는다. */
+  /** 어느 앱·환경 수집인지. 요약 머리글에 찍는다. */
+  app: string
   environment: string
   areaOrder: string[]
   color: boolean
+  /**
+   * 검색 조건. 두 개 이상이면 원격에서 교집합으로 걸러진 결과이므로,
+   * 결과가 적을 때 조건이 과했는지 판단할 수 있게 머리글 아래에 적는다.
+   */
+  criteria?: Criterion[]
   /** 반복돼서 접힌 줄 수. */
   collapsed?: number
 }
@@ -244,8 +251,23 @@ export function renderSummary(
   const { areaOrder, color } = opt
   const collapsed = opt.collapsed ?? 0
 
-  const label = opt.environment === '' ? '요약' : `요약 (${opt.environment})`
+  const where = [opt.app, opt.environment].filter((s) => s !== '').join(' / ')
+  const label = where === '' ? '요약' : `요약 (${where})`
   write(paint(`\n===== ${label} =====`, 'bold', color))
+
+  const criteria = opt.criteria ?? []
+  if (criteria.length > 1) {
+    // 조건이 여러 개면 원격에서 교집합으로 걸러졌다 — 모든 값이 같은 줄에
+    // 있어야 남는다. 결과가 적을 때 조건이 과했는지 여기서 보인다.
+    write(
+      paint(
+        `  조건 ${criteria.length}개 교집합: ` +
+          criteria.map((c) => `${c.field}=${c.value}`).join(' AND '),
+        'dim',
+        color,
+      ),
+    )
+  }
 
   const counts = new Map<string, number>()
   for (const r of records) {

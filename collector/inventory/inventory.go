@@ -66,53 +66,59 @@ var DefaultSSHOpts = []string{
 	"-o", "LogLevel=ERROR",
 }
 
-// Resolve 는 기본 이름과 환경으로 인벤토리 파일 경로를 만든다.
+// Resolve 는 기본 이름·앱·환경으로 인벤토리 파일 경로를 만든다.
 //
-//	Resolve("inventory.ai-stt", "prod")  →  "inventory.ai-stt.prod.json"
+//	Resolve("inventory", "ai-stt", "prod")  →  "inventory.ai-stt.prod.json"
 //
-// 환경은 파일 이름에만 산다. 파일이 없으면 같은 기본 이름으로 실제 존재하는
-// 환경들을 함께 알려준다 — 오타인지 아직 안 만든 환경인지 바로 보인다.
+// 앱과 환경은 파일 이름에만 산다. 파일 안에 또 적으면 서로 어긋날 수 있고,
+// 실행할 때 같은 값을 두 번 넘겨야 해서 방어가 아니라 중복이 된다.
+//
+// 파일이 없으면 같은 앱으로 실제 존재하는 환경들을 함께 알려준다 —
+// 오타인지 아직 안 만든 환경인지 바로 보인다.
 //
 // base 에 .json 이 붙어 있으면 떼고 쓴다. 그게 없으면
-// inventory.ai-stt.json.prod.json 같은 경로가 나온다.
-func Resolve(base, env string) (string, error) {
-	base = strings.TrimSuffix(base, ".json")
-	path := fmt.Sprintf("%s.%s.json", base, env)
+// inventory.json.ai-stt.prod.json 같은 경로가 나온다.
+func Resolve(base, app, env string) (string, error) {
+	path := pathFor(base, app, env)
 
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return path, nil
 	}
 
-	available := Environments(base)
+	available := Environments(base, app)
 	if len(available) == 0 {
 		return "", fmt.Errorf(
 			"인벤토리 파일이 없습니다: %s\n"+
-				"       (-i %s, --env %s)\n"+
-				"       %s.<환경>.json 형태의 파일이 하나도 없습니다",
-			path, base, env, base)
+				"       (-i %s, --app %s, --env %s)\n"+
+				"       %s.%s.<환경>.json 형태의 파일이 하나도 없습니다",
+			path, base, app, env, strings.TrimSuffix(base, ".json"), app)
 	}
 	return "", fmt.Errorf(
 		"인벤토리 파일이 없습니다: %s\n"+
-			"       (-i %s, --env %s)\n"+
-			"       쓸 수 있는 환경: %s",
-		path, base, env, strings.Join(available, ", "))
+			"       (-i %s, --app %s, --env %s)\n"+
+			"       %s 앱에 쓸 수 있는 환경: %s",
+		path, base, app, env, app, strings.Join(available, ", "))
 }
 
-// Environments 는 <기본이름>.<환경>.json 파일들에서 환경 이름을 뽑아
-// 정렬해 돌려준다.
-func Environments(base string) []string {
-	base = strings.TrimSuffix(base, ".json")
+func pathFor(base, app, env string) string {
+	return fmt.Sprintf("%s.%s.%s.json", strings.TrimSuffix(base, ".json"), app, env)
+}
 
-	matches, err := filepath.Glob(base + ".*.json")
+// Environments 는 <기본이름>.<앱>.<환경>.json 파일들에서 환경 이름을 뽑아
+// 정렬해 돌려준다.
+func Environments(base, app string) []string {
+	prefix := strings.TrimSuffix(base, ".json") + "." + app + "."
+
+	matches, err := filepath.Glob(prefix + "*.json")
 	if err != nil {
-		// base 에 glob 메타문자가 들어간 경우. 목록을 못 만들 뿐이다.
+		// base 나 app 에 glob 메타문자가 들어간 경우. 목록을 못 만들 뿐이다.
 		return nil
 	}
 
 	envs := make([]string, 0, len(matches))
 	for _, match := range matches {
-		env := strings.TrimSuffix(strings.TrimPrefix(match, base+"."), ".json")
-		if env != "" {
+		env := strings.TrimSuffix(strings.TrimPrefix(match, prefix), ".json")
+		if env != "" && !strings.Contains(env, ".") {
 			envs = append(envs, env)
 		}
 	}

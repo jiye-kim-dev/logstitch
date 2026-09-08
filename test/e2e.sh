@@ -13,8 +13,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 BIN="$ROOT/.bin/logstitch"
-INV_BASE="$ROOT/test/inventory"          # Go 수집기는 기본 이름 + --env
-INV="$ROOT/test/inventory.test.json"     # 파이썬 원본은 전체 경로
+INV_BASE="$ROOT/test/inventory"                    # Go 는 기본 이름 + --app/--env
+INV="$ROOT/test/inventory.sample.test.json"        # 파이썬 원본은 전체 경로
+APPS="$ROOT/test/apps.json"
+LS="$BIN --apps $APPS -i $INV_BASE"
 RID="rid-7f3a91"
 
 pass=0
@@ -54,9 +56,9 @@ export LOGSTITCH_FIXTURES="$ROOT/test/fixtures"
 
 RAW="$(mktemp)"
 OUT="$(mktemp)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi"' EXIT
 
-"$BIN" --env test -i "$INV_BASE" --rid "$RID" --max-lines 0 > "$RAW" 2>/dev/null
+$LS --app sample --env test --rid "$RID" --max-lines 0 > "$RAW" 2>/dev/null
 lines=$(grep -c '"type":"line"' "$RAW")
 [ "$lines" -eq 15 ] && ok "수집 15줄" || bad "수집 줄 수가 $lines (기대 15)"
 
@@ -68,21 +70,57 @@ grep -q '"environment":"test"' "$RAW" \
   && ok "환경이 meta 이벤트에 실림" \
   || bad "meta 에 environment 가 없음"
 
-# 환경 인자 — 없거나 해당 파일이 없으면 거부되어야 한다
-"$BIN" -i "$INV_BASE" --rid "$RID" >/dev/null 2>&1 \
+grep -q '"app":"sample"' "$RAW" \
+  && ok "앱이 meta 이벤트에 실림" \
+  || bad "meta 에 app 이 없음"
+
+# 앱/환경/필수 필드 — 하나라도 없으면 아무것도 돌지 않아야 한다
+$LS --env test --rid "$RID" >/dev/null 2>&1 \
+  && bad "--app 없이 실행됐다" \
+  || ok "--app 없으면 거부"
+
+$LS --app sample --rid "$RID" >/dev/null 2>&1 \
   && bad "--env 없이 실행됐다" \
   || ok "--env 없으면 거부"
+
+$LS --app sample --env test >/dev/null 2>&1 \
+  && bad "필수 필드 없이 실행됐다" \
+  || ok "필수 필드 없으면 거부"
+
+$LS --app 없는앱 --env test --rid "$RID" >/dev/null 2>&1 \
+  && bad "정의되지 않은 앱으로 실행됐다" \
+  || ok "모르는 앱은 거부"
+
+# multi 앱은 필수 필드가 둘 — 하나만 주면 거부
+missing_err=$($LS --app multi --env test --rid "$RID" 2>&1 >/dev/null || true)
+case "$missing_err" in
+  *state*) ok "빠진 필수 필드를 알려줌" ;;
+  *)       bad "빠진 필드를 알려주지 않음: $missing_err" ;;
+esac
 
 # 출력을 먼저 받아둔다. 파이프로 바로 넘기면 set -o pipefail 이 logstitch 의
 # 종료코드 2(의도된 실패)를 파이프라인 전체의 실패로 잡아서, grep 이 찾았는지
 # 여부와 무관하게 판정이 뒤집힌다.
-env_err=$("$BIN" --env prod -i "$INV_BASE" --rid "$RID" 2>&1 >/dev/null || true)
+env_err=$($LS --app sample --env prod --rid "$RID" 2>&1 >/dev/null || true)
 case "$env_err" in
   *"쓸 수 있는 환경: test"*)
     ok "없는 환경이면 쓸 수 있는 환경을 알려줌" ;;
   *)
     bad "없는 환경 에러가 환경 목록을 안 알려줌: $env_err" ;;
 esac
+
+# 원격 교집합 — 두 값이 같은 줄에 있어야 남는다.
+# 픽스처의 scheduler.log 에는 STARTED 4줄과 SUCCESS 1줄이 있다.
+$LS --app multi --env test --field rid="$RID" --field state=SUCCESS \
+  --max-lines 0 > "$RAW.multi" 2>/dev/null
+multi_lines=$(grep -c '"type":"line"' "$RAW.multi" || true)
+[ "$multi_lines" -eq 1 ] \
+  && ok "두 조건 교집합이 원격에서 계산됨 (1줄)" \
+  || bad "교집합 결과가 $multi_lines 줄 (기대 1)"
+
+grep -q '"fields":\[{"field":"rid"' "$RAW.multi" \
+  && ok "조건 순서가 앱 설정을 따름 (rid 먼저)" \
+  || bad "meta 의 조건 순서가 required 순서가 아님"
 
 node parser/src/cli.ts --no-color < "$RAW" > "$OUT" 2>/dev/null
 grep -q '⟲ 같은 내용 4회 반복' "$OUT" \
@@ -118,7 +156,7 @@ if [ -n "${PYTHON_REF:-}" ]; then
     for flags in "" "--strict" "--no-collapse" "--no-embed"; do
       (cd "$PYTHON_REF" && python3 logtrace.py -i "$INV" --rid "$RID" --json $flags) \
         > "$RAW.py" 2>/dev/null
-      "$BIN" --env test -i "$INV_BASE" --rid "$RID" --max-lines 0 2>/dev/null \
+      $LS --app sample --env test --rid "$RID" --max-lines 0 2>/dev/null \
         | node "$ROOT/parser/src/cli.ts" --json $flags > "$RAW.ts" 2>/dev/null
 
       if python3 test/compare_with_python.py "$RAW.py" "$RAW.ts" >/dev/null; then

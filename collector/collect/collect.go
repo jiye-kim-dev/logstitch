@@ -32,6 +32,20 @@ type Target struct {
 	Sources []inventory.Source
 }
 
+// Criterion : and 조건으로 필터링 주고 싶을때
+type Criterion struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+func values(criteria []Criterion) []string {
+	out := make([]string, 0, len(criteria))
+	for _, c := range criteria {
+		out = append(out, c.Value)
+	}
+	return out
+}
+
 // 호스트 실행 결과 상태.
 const (
 	StatusOK          = "ok"
@@ -40,17 +54,20 @@ const (
 	StatusNoSSHBinary = "no_ssh_binary"
 )
 
+// MetaEvent 는 스트림 맨 앞에 한 번 나온다. 파서가 무엇을 찾는 스트림인지
+// 알아야 매칭 종류를 판정할 수 있다.
 type MetaEvent struct {
-	Type        string   `json:"type"` // "meta"
-	Environment string   `json:"environment"`
-	Field       string   `json:"field"`
-	Value       string   `json:"value"`
-	StartedAt   string   `json:"startedAt"`
-	Targets     int      `json:"targets"`
-	Areas       []string `json:"areas"`
+	Type        string      `json:"type"` // "meta"
+	App         string      `json:"app"`
+	Environment string      `json:"environment"`
+	Fields      []Criterion `json:"fields"`
+	StartedAt   string      `json:"startedAt"`
+	Targets     int         `json:"targets"`
+	Areas       []string    `json:"areas"`
 }
 
-// LineEvent : grep 해서 가져오는 로그 데이터 담는 구조체 - 서버에 접속해서 데이터를 받아오는 역할만 담당하므로 파싱처리 금지임
+// LineEvent 는 원격에서 grep 에 걸린 로그 한 줄이다.
+// Line 은 불투명한 문자열로, 수집기는 그 내용을 해석하지 않는다.
 type LineEvent struct {
 	Type   string `json:"type"` // "line"
 	Area   string `json:"area"`
@@ -60,6 +77,9 @@ type LineEvent struct {
 	Line   string `json:"line"`
 }
 
+// HostEvent 는 한 호스트의 실행이 끝날 때마다 나온다.
+// 한 대가 죽어도 전체를 실패시키지 않는다 — 오히려 그 죽은 노드가
+// 장애 원인일 때가 많으므로 결과에 남긴다.
 type HostEvent struct {
 	Type      string `json:"type"` // "host"
 	Area      string `json:"area"`
@@ -72,22 +92,32 @@ type HostEvent struct {
 }
 
 type Options struct {
-	Environment string
+	App         string // 대상 애플리케이션. meta 이벤트로 파서에 넘긴다.
+	Environment string // 대상 환경. meta 이벤트로 파서에 넘긴다.
 	SSHOpts     []string
 	Timeout     time.Duration
 	Workers     int
 	After       int
 	MaxLines    int      // 호스트당 상한. 0 이면 무제한.
-	Areas       []string // 인벤토리 정의 순서
+	Areas       []string // 인벤토리 정의 순서. meta 이벤트로 파서에 넘긴다.
 }
 
+// Stats 는 종료 코드 결정에 쓸 최소한의 집계다.
+// 사람이 읽는 요약은 파서가 만든다.
 type Stats struct {
 	Lines       int
 	HostsFailed int
 	HostsOK     int
 }
 
-func Run(ctx context.Context, targets []Target, field, value string, opt Options, out io.Writer) Stats {
+// Run 은 모든 타깃을 병렬로 실행하고 NDJSON 을 out 에 쓴다.
+func Run(
+	ctx context.Context,
+	targets []Target,
+	criteria []Criterion,
+	opt Options,
+	out io.Writer,
+) Stats {
 	buffered := bufio.NewWriterSize(out, 64*1024)
 	defer buffered.Flush()
 
@@ -123,9 +153,9 @@ func Run(ctx context.Context, targets []Target, field, value string, opt Options
 
 	events <- MetaEvent{
 		Type:        "meta",
+		App:         opt.App,
 		Environment: opt.Environment,
-		Field:       field,
-		Value:       value,
+		Fields:      criteria,
 		StartedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Targets:     len(targets),
 		Areas:       opt.Areas,
@@ -136,6 +166,8 @@ func Run(ctx context.Context, targets []Target, field, value string, opt Options
 		workers = min(16, max(4, len(targets)))
 	}
 
+	searchValues := values(criteria)
+
 	jobs := make(chan Target)
 	var wg sync.WaitGroup
 	for range workers {
@@ -143,7 +175,7 @@ func Run(ctx context.Context, targets []Target, field, value string, opt Options
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				runOne(ctx, t, value, opt, events)
+				runOne(ctx, t, searchValues, opt, events)
 			}
 		}()
 	}
@@ -158,8 +190,8 @@ func Run(ctx context.Context, targets []Target, field, value string, opt Options
 	return stats
 }
 
-func runOne(ctx context.Context, t Target, value string, opt Options, events chan<- any) {
-	script := remote.BuildScript(t.Sources, value, opt.After)
+func runOne(ctx context.Context, t Target, searchValues []string, opt Options, events chan<- any) {
+	script := remote.BuildScript(t.Sources, searchValues, opt.After)
 
 	cctx, cancel := context.WithTimeout(ctx, opt.Timeout)
 	defer cancel()

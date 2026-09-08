@@ -13,4 +13,5 @@ test/fixtures/
 inventory.json
 inventory.*.json
 !inventory.example.json
-!test/inventory.test.json
+!test/inventory.sample.test.json
+!test/inventory.multi.test.json

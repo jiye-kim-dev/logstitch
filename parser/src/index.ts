@@ -24,6 +24,7 @@ export {
 } from './fields.ts'
 
 export { Normalizer, classifyMatch, collapseRuns, findValuePaths } from './records.ts'
+export type { NormalizerOptions } from './records.ts'
 
 export {
   matchNote,
@@ -37,6 +38,7 @@ export type { SummaryOptions, TextOptions } from './render.ts'
 export { isWeakMatch } from './types.ts'
 export type {
   CollectorEvent,
+  Criterion,
   HostEvent,
   HostResult,
   HostStatus,

@@ -139,12 +139,12 @@ func TestLoadIgnoresUnknownFields(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	dir := t.TempDir()
-	base := filepath.Join(dir, "inventory.ai-stt")
+	base := filepath.Join(dir, "inventory")
 	write(t, dir, "inventory.ai-stt.prod.json", validBody)
 	write(t, dir, "inventory.ai-stt.stage.json", validBody)
 
 	t.Run("기본 이름과 환경을 합친다", func(t *testing.T) {
-		path, err := Resolve(base, "prod")
+		path, err := Resolve(base, "ai-stt", "prod")
 		if err != nil {
 			t.Fatalf("예상치 못한 오류: %v", err)
 		}
@@ -155,7 +155,7 @@ func TestResolve(t *testing.T) {
 
 	t.Run(".json 이 붙어 있으면 떼고 쓴다", func(t *testing.T) {
 		// 그게 없으면 inventory.ai-stt.json.prod.json 이 나온다.
-		path, err := Resolve(base+".json", "prod")
+		path, err := Resolve(base+".json", "ai-stt", "prod")
 		if err != nil {
 			t.Fatalf("예상치 못한 오류: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestResolve(t *testing.T) {
 	})
 
 	t.Run("없는 환경이면 쓸 수 있는 환경을 알려준다", func(t *testing.T) {
-		_, err := Resolve(base, "dev")
+		_, err := Resolve(base, "ai-stt", "dev")
 		if err == nil {
 			t.Fatal("없는 환경이 통과했다")
 		}
@@ -178,7 +178,7 @@ func TestResolve(t *testing.T) {
 	})
 
 	t.Run("파일이 하나도 없으면 그것도 알려준다", func(t *testing.T) {
-		_, err := Resolve(filepath.Join(dir, "없는서비스"), "prod")
+		_, err := Resolve(filepath.Join(dir, "없는서비스"), "ai-stt", "prod")
 		if err == nil {
 			t.Fatal("없는 기본 이름이 통과했다")
 		}
@@ -191,7 +191,7 @@ func TestResolve(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, "inventory.ai-stt.qa.json"), 0o700); err != nil {
 			t.Fatalf("디렉토리 생성 실패: %v", err)
 		}
-		if _, err := Resolve(base, "qa"); err == nil {
+		if _, err := Resolve(base, "ai-stt", "qa"); err == nil {
 			t.Error("디렉토리가 인벤토리 파일로 통과했다")
 		}
 	})
@@ -199,14 +199,14 @@ func TestResolve(t *testing.T) {
 
 func TestEnvironments(t *testing.T) {
 	dir := t.TempDir()
-	base := filepath.Join(dir, "inventory.ai-stt")
+	base := filepath.Join(dir, "inventory")
 	write(t, dir, "inventory.ai-stt.prod.json", validBody)
 	write(t, dir, "inventory.ai-stt.dev.json", validBody)
 	write(t, dir, "inventory.ai-stt.stage.json", validBody)
-	// 다른 서비스 파일은 섞이지 않아야 한다.
-	write(t, dir, "inventory.live.prod.json", validBody)
+	// 다른 앱 파일은 섞이지 않아야 한다.
+	write(t, dir, "inventory.forwarder.prod.json", validBody)
 
-	got := Environments(base)
+	got := Environments(base, "ai-stt")
 	want := []string{"dev", "prod", "stage"}
 	if len(got) != len(want) {
 		t.Fatalf("환경 목록이 %v (기대 %v)", got, want)
@@ -218,7 +218,7 @@ func TestEnvironments(t *testing.T) {
 		}
 	}
 
-	if envs := Environments(filepath.Join(dir, "없는서비스")); len(envs) != 0 {
+	if envs := Environments(filepath.Join(dir, "없는서비스"), "ai-stt"); len(envs) != 0 {
 		t.Errorf("없는 기본 이름에 환경이 나왔다: %v", envs)
 	}
 }

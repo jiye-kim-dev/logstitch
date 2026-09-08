@@ -9,17 +9,29 @@
 
 export type HostStatus = 'ok' | 'timeout' | 'ssh_error' | 'no_ssh_binary'
 
+/**
+ * 검색 조건 하나.
+ *
+ * 여러 개면 수집기가 원격에서 grep 을 이어붙여 교집합을 만든다 — 모든 값이
+ * 같은 줄에 있어야 남는다. 순서가 의미를 가지며 첫 항목이 주 식별자다.
+ */
+export interface Criterion {
+  field: string
+  value: string
+}
+
 export interface MetaEvent {
   type: 'meta'
   /**
-   * 이 수집이 어느 환경(dev/stage/prod ...)에서 왔는지.
+   * 이 수집이 어느 앱·환경에서 왔는지.
    *
    * 줄마다 싣지 않고 여기 한 번만 온다. 파서가 모든 레코드에 찍어주므로
-   * JSONL 파일만 봐도 어느 환경인지 알 수 있다.
+   * JSONL 파일만 봐도 어디서 온 것인지 알 수 있다.
    */
+  app: string
   environment: string
-  field: string
-  value: string
+  /** 검색 조건. 첫 항목이 주 식별자이고 매칭 종류 판정에 쓰인다. */
+  fields: Criterion[]
   startedAt: string
   targets: number
   /**
@@ -101,7 +113,8 @@ export function isWeakMatch(match: MatchKind): boolean {
 // ── 레코드 ──────────────────────────────────────────────────────────────────
 
 export interface LogRecord {
-  /** 어느 환경에서 수집됐는지. meta 이벤트에서 받아 모든 레코드에 찍는다. */
+  /** 어느 앱·환경에서 수집됐는지. meta 이벤트에서 받아 모든 레코드에 찍는다. */
+  app: string
   environment: string
   area: string
   host: string
