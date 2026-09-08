@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+
+# 빌드 산출물
+.bin/
+node_modules/
+*.tsbuildinfo
+
+# 테스트 픽스처는 make_fixtures.sh 가 만든다
+test/fixtures/
+
+# 실제 환경 인벤토리는 저장소에 넣지 않는다
+inventory.json
+inventory.*.json
+!inventory.example.json
+!test/inventory.test.json

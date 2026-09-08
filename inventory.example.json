@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "inventory json 파일 예시",
+    "",
+    "환경은 파일 이름에 있다. <기본이름>.<환경>.json 으로 나눠 쓴다:",
+    "  inventory.ai-stt.prod.json / .stage.json / .dev.json",
+    "",
+    "이 파일을 복사해서 쓴다:",
+    "  cp inventory.example.json inventory.ai-stt.prod.json",
+    "  logstitch --env prod -i inventory.ai-stt --rid <값>"
+  ],
+  "ssh_opts": [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "LogLevel=ERROR"
+  ],
+  "areas": [
+    {
+      "name": "requester",
+      "hosts": [
+        "dev-01",
+        "dev-02"
+      ],
+      "sources": [
+        {
+          "name": "app",
+          "paths": [
+            "/var/log/user/app/requester/debug.log"
+          ]
+        }
+      ]
+    }
+  ]
+}

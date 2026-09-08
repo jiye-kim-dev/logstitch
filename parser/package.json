@@ -1,0 +1,25 @@
+{
+  "name": "logstitch-parser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "logstitch 수집기의 NDJSON 을 파싱해 시간순으로 병합한다",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "logstitch-parse": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

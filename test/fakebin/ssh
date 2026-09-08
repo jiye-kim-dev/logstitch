@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ssh 를 흉내내는 테스트용 스크립트.
+#
+# 실제 노드 없이 전체 파이프라인을 검증한다. PATH 앞에 이 디렉토리를 두면
+# 수집기가 부르는 ssh 가 이 스크립트가 되고, 원격 스크립트는 픽스처
+# 디렉토리 안에서 로컬 bash 로 실행된다. 코드 경로는 실제와 동일하다.
+#
+#   PATH="$PWD/test/fakebin:$PATH" \
+#   LOGSTITCH_FIXTURES="$PWD/test/fixtures" \
+#     logstitch -i test/inventory.test.json --rid rid-7f3a91
+#
+# 인벤토리의 paths 가 상대 경로인 이유가 이것이다. 픽스처 루트 아래
+# 호스트별 디렉토리로 cd 한 뒤 원격 셸이 그 경로를 확장한다.
+set -u
+
+FIX="${LOGSTITCH_FIXTURES:?LOGSTITCH_FIXTURES 환경변수가 필요합니다}"
+
+# ssh 옵션을 건너뛰고 첫 비옵션 인자(호스트)를 찾는다.
+# 실제 호출은 ssh -o A=B -o C=D <host> "bash -s" 형태다.
+host=""
+i=1
+while [ "$i" -le "$#" ]; do
+  arg="${!i}"
+  case "$arg" in
+    -o|-i|-p|-l|-F|-J)  i=$((i + 2)); continue ;;  # 값을 따로 받는 옵션
+    -*)                 i=$((i + 1)); continue ;;  # -oFoo=bar, -q 등
+    *)                  host="$arg"; break ;;
+  esac
+done
+
+if [ -z "$host" ]; then
+  echo "fakessh: 인자에서 호스트를 찾지 못했습니다: $*" >&2
+  exit 255
+fi
+
+# 접속 실패 호스트. 한 대가 죽어도 전체가 실패하지 않는지 확인하는 용도다.
+case "$host" in
+  dead-*)
+    echo "ssh: connect to host $host port 22: Connection refused" >&2
+    exit 255
+    ;;
+esac
+
+dir="$FIX/$host"
+if [ ! -d "$dir" ]; then
+  echo "ssh: $host: 픽스처 디렉토리가 없습니다 ($dir)" >&2
+  exit 255
+fi
+
+cd "$dir" || exit 255
+exec bash -s
