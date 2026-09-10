@@ -15,3 +15,6 @@ inventory.*.json
 !inventory.example.json
 !test/inventory.sample.test.json
 !test/inventory.multi.test.json
+
+# 수집 원본은 고객 키·IP 가 그대로 들어있어 커밋하지 않는다
+.runs/
