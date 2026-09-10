@@ -142,29 +142,7 @@ Host req-* sch-* rcv-*
 
 ```
 <기본이름>.<앱>.<환경>.json
-
-inventory.ai-stt.prod.json
-inventory.ai-stt.stage.json
-inventory.forwarder.prod.json
 ```
-
-```sh
-cp inventory.example.json inventory.ai-stt.prod.json
-```
-
-`-i` 는 확장자·앱·환경을 뺀 **기본 이름**이고(기본값 `inventory`), `--app` 과
-`--env` 가 나머지를 채운다.
-
-```sh
-logstitch --app ai-stt --env prod --rid abc123
-  → inventory.ai-stt.prod.json
-```
-
-`hosts` 는 위에서 만든 ssh 별칭, `paths` 는 원격 셸이 확장하는 glob 이다.
-로테이션된 `.gz` 도 잡히도록 `*` 를 넉넉히 준다.
-
-파일 안에는 앱도 환경도 적지 않는다. 두 곳에 적으면 서로 어긋날 수 있고,
-실행할 때 같은 값을 두 번 넘겨야 해서 방어가 아니라 중복이 된다.
 
 **앱과 환경 이름은 코드가 정하지 않는다.** `apps.json` 에 항목을 만들고
 그 이름으로 인벤토리 파일을 만들면 그게 앱·환경이다.
@@ -174,19 +152,6 @@ logstitch --app ai-stt --env prod --rid abc123
 `--app`, `--env`, 그리고 앱의 필수 필드 — 하나라도 없으면 ssh 에 붙지 않고
 거부한다. 에러는 **실제로 뭘 쓸 수 있는지** 알려준다.
 
-```sh
-$ logstitch --env test --rid abc
-[오류] --app 이 필요합니다 (apps.json 에 정의된 앱: ai-stt, forwarder)
-
-$ logstitch --app ai-stt --rid abc
-[오류] --env 가 필요합니다 (ai-stt 앱에 쓸 수 있는 환경: prod, stage)
-
-$ logstitch --app forwarder --env prod --field stream_key=abc
-[오류] 앱 "forwarder" 의 필수 필드가 빠졌습니다: session_id, node_id
-       필요한 필드 전체: stream_key, session_id, node_id
-       예: logstitch --app forwarder --env prod --field stream_key=<값> \
-             --field session_id=<값> --field node_id=<값>
-```
 
 ## 빌드
 
@@ -214,7 +179,7 @@ export PATH="$PWD/.bin:$PATH"
 `--app` 과 `--env` 는 매번 붙어다니므로 셸 변수로 묶어두면 편하다.
 
 ```sh
-LS="logstitch --app ai-stt --env prod"
+LS="logstitch --app app --env prod"
 
 $LS --rid abc123 | logstitch-parse                  # 기본
 $LS --rid abc123 --dry-run                          # 접속 없이 원격 명령만 확인
@@ -328,46 +293,6 @@ export const CALLER_KEYS = ['source', 'caller', ...]
 
 타임스탬프는 ISO8601(`Z`/오프셋/공백 구분), epoch 초·밀리·마이크로·나노를 자동
 판별한다. `⚠ 타임스탬프를 못 읽은 줄` 경고가 뜨면 `TS_KEYS` 에 키를 추가한다.
-
-## 파이썬 구현에서 달라진 점
-
-이식하면서 **개선한 것**:
-
-- **나노초 정밀도를 지킨다.** 실제 로그가 `.568353422Z`(9자리)인데 파이썬 `datetime` 은
-  마이크로초까지만 담는다. JS `Date` 는 밀리초까지라 더 나쁘다. 그래서 표시용 `Date` 와
-  **정렬용 나노초(`bigint`)를 따로** 들고 다닌다. 같은 밀리초 안의 인과 순서를 잃지 않는다.
-- **`--max-lines`** (기본 50000). 한 호스트가 거대한 결과를 뱉으면 상한에서 끊고
-  요약에 잘렸다고 표시한다. 파이썬에는 상한이 없어서 메모리로 다 받았다.
-- **앱과 환경이 1급 개념이 되었다.** 인벤토리를 `<기본이름>.<앱>.<환경>.json`
-  으로 나누고 `--app`/`--env` 로 고른다. 없는 걸 주면 실제로 있는 것을
-  알려준다. 수집한 앱·환경은 `meta` 이벤트로 파서에 전달되어 요약 머리글과
-  JSONL 레코드에 남는다.
-- **앱별 필수 필드** (`apps.json`). 앱마다 반드시 받아야 하는 필드가 다르고,
-  하나라도 빠지면 ssh 에 붙지 않는다. 파이썬은 `--field` 하나만 받았고 그게
-  뭐든 통과했다.
-- **조건이 여러 개면 원격에서 교집합.** grep 을 파이프로 이어붙여 ssh 왕복
-  1회에 처리한다.
-- **`_match` 가 문자열이 아니라 union.** 파이썬은 `"nested:a.b[0]"` 문자열을 만들고
-  렌더링 시점에 다시 파싱했다. 이제 `{ kind: 'nested', path: 'a.b[0]' }` 다.
-- **줄 길이 제한이 없다.** 파이썬은 stdout 을 통째로 읽었고, Go 는 `bufio.Scanner` 대신
-  `Reader.ReadString` 을 쓴다. Scanner 는 64KB 에서 줄을 자르는데 스택트레이스가 박힌
-  JSON 로그 한 줄은 그걸 넘을 수 있다.
-
-**빠진 것**:
-
-- **라운드2(파생키 재조회)가 없다.** 1차 범위에서 제외했다. 인벤토리의 `followup`
-  블록은 읽어도 무시하므로 기존 인벤토리 파일이 그대로 로드된다.
-  (참고: `inventory.ai-stt.json` 에는 애초에 `followup` 이 없어서 파이썬에서도
-  라운드2 가 돌지 않고 있었다. 예전 README 의 「동작」 설명과 설정이 드리프트한 상태였다.)
-
-**남은 차이**:
-
-- **셸 인용 스타일이 다르다.** 파이썬 `shlex.quote` 는 `'it'"'"'s'` 를, 이쪽은
-  `'it'\''s'` 를 만든다. POSIX 셸에서 둘은 동등하고,
-  `collector/internal/remote/script_test.go` 가 실제 셸에 넘겨 라운드트립을 검증한다.
-- **소수점 숫자 검색은 결과가 갈릴 수 있다.** 파이썬 `str(1.0)` 은 `"1.0"` 인데 JS
-  `String(1.0)` 은 `"1"` 이다. `JSON.parse` 는 `1` 과 `1.0` 을 구분하지 않으므로 복원할
-  수 없다. 검색값이 rid / content_id 같은 문자열이면 영향이 없다.
 
 ## 보안상 지켜둔 것
 
