@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -62,7 +63,9 @@ type request struct {
 	Env           string
 	// Criteria 는 검색 조건이다. 앱의 required 순서가 앞에 오고,
 	// 추가로 준 필드가 뒤에 붙는다.
-	Criteria   []collect.Criterion
+	Criteria []collect.Criterion
+	// View 는 앱 설정의 표현 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
+	View       json.RawMessage
 	Areas      []string
 	After      int
 	TimeoutSec int
@@ -152,6 +155,7 @@ func run() error {
 		After:       req.After,
 		MaxLines:    req.MaxLines,
 		Areas:       areaOrder,
+		View:        req.View,
 	}, os.Stdout)
 
 	fmt.Fprintf(os.Stderr, "수집 완료: %d줄, 성공 %d대, 실패 %d대\n",
@@ -230,6 +234,7 @@ func buildRequest(
 		App:           app,
 		Env:           env,
 		Criteria:      criteria,
+		View:          appDef.View,
 		Areas:         areas,
 		After:         after,
 		TimeoutSec:    timeout,

@@ -27,13 +27,52 @@ export { Normalizer, classifyMatch, collapseRuns, findValuePaths } from './recor
 export type { NormalizerOptions } from './records.ts'
 
 export {
+  areaColorMap,
+  fmtDuration,
+  fmtTs,
+  hms,
+  hmsMs,
+  makeDayTracker,
   matchNote,
   paint,
   renderJsonl,
   renderSummary,
   renderText,
+  utcDate,
+  writeRecord,
 } from './render.ts'
 export type { SummaryOptions, TextOptions } from './render.ts'
+
+export {
+  PROFILES,
+  VIEW_NAMES,
+  classifyGeneric,
+  contentionSetup,
+  isViewName,
+  parseViewHint,
+  resolveView,
+} from './profiles.ts'
+export type { AppProfile, Classified, EventKind, LaneFallback, ViewName } from './profiles.ts'
+
+export { classifyForwarder, forwarderLane } from './forwarder.ts'
+
+export { buildFlowModel, renderFlow } from './view-flow.ts'
+export type { FlowGroup, FlowModel } from './view-flow.ts'
+
+export {
+  SKEW_SUSPECT_NANOS,
+  buildContentionModel,
+  fmtDelta,
+  laneOf,
+  renderContention,
+} from './view-contention.ts'
+export type {
+  ActiveInterval,
+  ActiveOverlap,
+  ContentionEvent,
+  ContentionModel,
+  ContentionOptions,
+} from './view-contention.ts'
 
 export { isWeakMatch } from './types.ts'
 export type {
@@ -47,4 +86,5 @@ export type {
   MatchKind,
   MetaEvent,
   Ts,
+  ViewHint,
 } from './types.ts'

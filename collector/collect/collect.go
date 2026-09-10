@@ -57,13 +57,14 @@ const (
 // MetaEvent 는 스트림 맨 앞에 한 번 나온다. 파서가 무엇을 찾는 스트림인지
 // 알아야 매칭 종류를 판정할 수 있다.
 type MetaEvent struct {
-	Type        string      `json:"type"` // "meta"
-	App         string      `json:"app"`
-	Environment string      `json:"environment"`
-	Fields      []Criterion `json:"fields"`
-	StartedAt   string      `json:"startedAt"`
-	Targets     int         `json:"targets"`
-	Areas       []string    `json:"areas"`
+	Type        string          `json:"type"` // "meta"
+	App         string          `json:"app"`
+	Environment string          `json:"environment"`
+	Fields      []Criterion     `json:"fields"`
+	StartedAt   string          `json:"startedAt"`
+	Targets     int             `json:"targets"`
+	Areas       []string        `json:"areas"`
+	View        json.RawMessage `json:"view,omitempty"`
 }
 
 // LineEvent 는 원격에서 grep 에 걸린 로그 한 줄이다.
@@ -98,8 +99,9 @@ type Options struct {
 	Timeout     time.Duration
 	Workers     int
 	After       int
-	MaxLines    int      // 호스트당 상한. 0 이면 무제한.
-	Areas       []string // 인벤토리 정의 순서. meta 이벤트로 파서에 넘긴다.
+	MaxLines    int             // 호스트당 상한. 0 이면 무제한.
+	Areas       []string        // 인벤토리 정의 순서. meta 이벤트로 파서에 넘긴다.
+	View        json.RawMessage // 앱 설정의 표현 힌트. 해석 없이 meta 로 전달.
 }
 
 // Stats 는 종료 코드 결정에 쓸 최소한의 집계다.
@@ -159,6 +161,7 @@ func Run(
 		StartedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Targets:     len(targets),
 		Areas:       opt.Areas,
+		View:        opt.View,
 	}
 
 	workers := opt.Workers

@@ -36,21 +36,26 @@ export function paint(text: string, color: string | undefined, enabled: boolean)
 }
 
 /** UTC 기준 HH:MM:SS.mmm. 시각을 물려받은 줄은 앞에 ~ 를 붙인다. */
-function fmtTs(record: LogRecord): string {
+export function fmtTs(record: LogRecord): string {
   if (record.ts === null) return '--:--:--.---'
   const stamp = record.ts.date.toISOString().slice(11, 23)
   return record.tsInherited ? `~${stamp}` : ` ${stamp}`
 }
 
-function hms(ts: Ts): string {
+export function hms(ts: Ts): string {
   return ts.date.toISOString().slice(11, 19)
 }
 
-function utcDate(ts: Ts): string {
+/** UTC 기준 HH:MM:SS.mmm (밀리초까지). */
+export function hmsMs(ts: Ts): string {
+  return ts.date.toISOString().slice(11, 23)
+}
+
+export function utcDate(ts: Ts): string {
   return ts.date.toISOString().slice(0, 10)
 }
 
-function fmtDuration(seconds: number): string {
+export function fmtDuration(seconds: number): string {
   const total = Math.round(seconds)
   if (total < 60) return `${total}s`
   if (total < 3600) {
@@ -126,14 +131,91 @@ export interface TextOptions {
   valueCap: number
 }
 
+/** 영역 이름 → 고정 색. 뷰가 달라도 같은 영역은 같은 색이어야 눈이 따라간다. */
+export function areaColorMap(areaOrder: string[]): Map<string, string> {
+  const areaColor = new Map<string, string>()
+  areaOrder.forEach((name, i) => areaColor.set(name, AREA_COLORS[i % AREA_COLORS.length]!))
+  return areaColor
+}
+
+/**
+ * 레코드 하나를 본문 + 부속 줄(회색 필드, 반복, 매칭 노트)로 쓴다.
+ *
+ * renderText(병합 타임라인)와 flow 뷰가 공유한다. 라벨은 뷰마다 다르므로
+ * (타임라인은 area/source, flow 는 그룹 머리글에 area 가 있어 source 만)
+ * 호출자가 pad 까지 마친 문자열로 넘긴다.
+ */
+export function writeRecord(
+  record: LogRecord,
+  label: string,
+  labelColor: string | undefined,
+  hostWidth: number,
+  opt: TextOptions,
+  write: (line: string) => void,
+): void {
+  const level = record.level.slice(0, 5).padEnd(5)
+
+  let body = record.msg !== '' ? record.msg : record.raw
+  if (record.caller !== '') {
+    body += `  ${paint(`(${record.caller})`, 'dim', opt.color)}`
+  }
+
+  write(
+    [
+      paint(fmtTs(record), 'dim', opt.color),
+      paint(label, labelColor, opt.color),
+      record.host.padEnd(hostWidth),
+      paint(level, LEVEL_COLORS[record.level], opt.color),
+      body,
+    ].join('  '),
+  )
+
+  // 값이 중첩 구조나 더 긴 값 안에 숨어 있는 줄은 --no-extra 여도 필드를
+  // 보여준다. 그런 줄은 메인 한 줄만 봐서는 왜 걸렸는지 알 수 없다.
+  const buried = record.match.kind === 'nested' || record.match.kind === 'partial'
+  if (opt.showExtra || buried) {
+    const extra = extraFields(record, opt.extraWidth, opt.valueCap)
+    if (extra !== '') write(paint(`      ${extra}`, 'dim', opt.color))
+  }
+
+  const repeat = record.repeat ?? 1
+  if (repeat > 1) {
+    let span = ''
+    if (record.ts !== null && record.repeatUntil !== undefined) {
+      const seconds =
+        Number(record.repeatUntil.nanos - record.ts.nanos) / 1e9
+      span =
+        ` — ${hms(record.ts)} → ${hms(record.repeatUntil)}` +
+        ` (${fmtDuration(seconds)})`
+    }
+    write(paint(`      ⟲ 같은 내용 ${repeat}회 반복${span}`, 'cyan', opt.color))
+  }
+
+  const note = matchNote(record.match)
+  if (note !== '') write(paint(`      ${note}`, 'yellow', opt.color))
+}
+
+/** 날짜가 바뀌는 줄 앞에 구분선을 넣기 위한 추적기. */
+export function makeDayTracker(
+  color: boolean,
+  write: (line: string) => void,
+): (record: LogRecord) => void {
+  let prevDay: string | null = null
+  return (record) => {
+    if (record.ts !== null && utcDate(record.ts) !== prevDay) {
+      prevDay = utcDate(record.ts)
+      write(paint(`\n──── ${prevDay} (UTC) ────`, 'dim', color))
+    }
+  }
+}
+
 export function renderText(
   records: LogRecord[],
   areaOrder: string[],
   opt: TextOptions,
   write: (line: string) => void,
 ): void {
-  const areaColor = new Map<string, string>()
-  areaOrder.forEach((name, i) => areaColor.set(name, AREA_COLORS[i % AREA_COLORS.length]!))
+  const areaColor = areaColorMap(areaOrder)
 
   const labelWidth = Math.max(
     12,
@@ -141,55 +223,12 @@ export function renderText(
   )
   const hostWidth = Math.max(8, ...records.map((r) => r.host.length))
 
-  let prevDay: string | null = null
+  const trackDay = makeDayTracker(opt.color, write)
 
   for (const record of records) {
-    if (record.ts !== null && utcDate(record.ts) !== prevDay) {
-      prevDay = utcDate(record.ts)
-      write(paint(`\n──── ${prevDay} (UTC) ────`, 'dim', opt.color))
-    }
-
+    trackDay(record)
     const label = `${record.area}/${record.source}`.padEnd(labelWidth)
-    const level = record.level.slice(0, 5).padEnd(5)
-
-    let body = record.msg !== '' ? record.msg : record.raw
-    if (record.caller !== '') {
-      body += `  ${paint(`(${record.caller})`, 'dim', opt.color)}`
-    }
-
-    write(
-      [
-        paint(fmtTs(record), 'dim', opt.color),
-        paint(label, areaColor.get(record.area), opt.color),
-        record.host.padEnd(hostWidth),
-        paint(level, LEVEL_COLORS[record.level], opt.color),
-        body,
-      ].join('  '),
-    )
-
-    // 값이 중첩 구조나 더 긴 값 안에 숨어 있는 줄은 --no-extra 여도 필드를
-    // 보여준다. 그런 줄은 메인 한 줄만 봐서는 왜 걸렸는지 알 수 없다.
-    const buried = record.match.kind === 'nested' || record.match.kind === 'partial'
-    if (opt.showExtra || buried) {
-      const extra = extraFields(record, opt.extraWidth, opt.valueCap)
-      if (extra !== '') write(paint(`      ${extra}`, 'dim', opt.color))
-    }
-
-    const repeat = record.repeat ?? 1
-    if (repeat > 1) {
-      let span = ''
-      if (record.ts !== null && record.repeatUntil !== undefined) {
-        const seconds =
-          Number(record.repeatUntil.nanos - record.ts.nanos) / 1e9
-        span =
-          ` — ${hms(record.ts)} → ${hms(record.repeatUntil)}` +
-          ` (${fmtDuration(seconds)})`
-      }
-      write(paint(`      ⟲ 같은 내용 ${repeat}회 반복${span}`, 'cyan', opt.color))
-    }
-
-    const note = matchNote(record.match)
-    if (note !== '') write(paint(`      ${note}`, 'yellow', opt.color))
+    writeRecord(record, label, areaColor.get(record.area), hostWidth, opt, write)
   }
 }
 

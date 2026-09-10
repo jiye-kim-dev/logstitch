@@ -20,6 +20,7 @@ const validBody = `{
   "apps": {
     "ai-stt":    { "required": ["rid"] },
     "forwarder": { "required": ["stream_key", "session_id", "node_id"],
+                   "view": { "default": "contention", "lane": "server_id" },
                    "note": "세 값이 같은 줄에 있어야 걸린다" }
   }
 }`
@@ -49,6 +50,15 @@ func TestLoadValid(t *testing.T) {
 			t.Errorf("required 순서가 %v (기대 %v)", fwd.Required, want)
 			break
 		}
+	}
+
+	// view 는 해석하지 않고 원문 그대로 보존되어야 한다
+	if !strings.Contains(string(fwd.View), `"lane"`) ||
+		!strings.Contains(string(fwd.View), `"server_id"`) {
+		t.Errorf("view 힌트가 원문 그대로 보존되지 않았다: %s", fwd.View)
+	}
+	if stt.View != nil {
+		t.Errorf("view 가 없는 앱에 값이 생겼다: %s", stt.View)
 	}
 
 	if _, ok := cfg.Find("없는앱"); ok {

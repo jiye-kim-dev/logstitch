@@ -20,6 +20,32 @@ export interface Criterion {
   value: string
 }
 
+/**
+ * 앱 설정(apps.json)의 표현 힌트. 수집기는 해석하지 않고 그대로 실어 보낸다.
+ *
+ * 힌트만으로도 범용 뷰가 동작하도록 선언적인 값만 담는다 — FSM 해석 같은
+ * 앱 의미론은 JSON 으로 표현하는 순간 설정 파일이 DSL 이 되므로, 그건
+ * 파서의 앱 프로필 코드(profiles.ts)에 둔다.
+ */
+export interface ViewHint {
+  /** 기본 뷰 이름. timeline | flow | contention */
+  default?: string
+  /** contention 뷰에서 레인을 나눌 필드 (예: server_id). 없으면 host 로 나눈다. */
+  lane?: string
+  /** 세션 구분 필드 (예: trace_id). 레인 안에서 세션이 바뀌는 지점을 표시한다. */
+  session?: string
+  /**
+   * lane 필드가 없거나 빈 줄의 레인 폴백: 'host'(기본) 또는 'source'.
+   *
+   * 한 호스트가 인스턴스 여러 개를 돌리고 인벤토리 소스명이 인스턴스를
+   * 식별하면(forwarder: 소스 forwarder-a/b = server_id 값) 'source' 로 두어야
+   * 세션 컨텍스트 전에 찍힌 줄이 제 레인에 합류한다. 반대로 호스트마다
+   * 같은 소스명을 쓰는 배치에서 'source' 를 쓰면 서로 다른 노드가 한 레인으로
+   * 합쳐지므로 기본값은 'host' 다.
+   */
+  laneFallback?: string
+}
+
 export interface MetaEvent {
   type: 'meta'
   /**
@@ -41,6 +67,8 @@ export interface MetaEvent {
    * 수집기가 알려준 이 순서를 써야 한다.
    */
   areas?: string[]
+  /** 앱 설정의 표현 힌트. 수집기가 apps.json 에서 그대로 실어 보낸다. */
+  view?: ViewHint
 }
 
 export interface LineEvent {

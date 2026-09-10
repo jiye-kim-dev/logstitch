@@ -18,10 +18,14 @@ import (
 // App 은 한 애플리케이션의 검색 규칙이다.
 type App struct {
 	// Required 는 이 앱을 조회할 때 반드시 넘겨야 하는 필드다.
-	//
 	// 순서가 의미를 가진다. 원격에서 grep 을 이 순서로 이어붙이므로
 	// 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 전송량이 줄어든다.
 	Required []string `json:"required"`
+
+	// View 는 파서를 위한 표현 힌트다. 수집기는 내용을 해석하지 않고
+	// meta 이벤트에 그대로 실어 보낸다 — 로그를 어떻게 보여줄지는
+	// 파서의 일이고, 여기서 파싱하면 그 경계가 무너진다.
+	View json.RawMessage `json:"view,omitempty"`
 
 	// Note 는 사람을 위한 메모다. 코드는 쓰지 않는다.
 	Note string `json:"note,omitempty"`

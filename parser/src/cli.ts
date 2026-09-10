@@ -14,10 +14,21 @@ import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 
 import { FAR_FUTURE_NANOS } from './fields.ts'
+import {
+  PROFILES,
+  VIEW_NAMES,
+  contentionSetup,
+  isViewName,
+  parseViewHint,
+  resolveView,
+} from './profiles.ts'
+import type { ViewName } from './profiles.ts'
 import { Normalizer, collapseRuns } from './records.ts'
 import { renderJsonl, renderSummary, renderText } from './render.ts'
 import { isWeakMatch } from './types.ts'
-import type { CollectorEvent, Criterion, HostResult, LogRecord } from './types.ts'
+import type { CollectorEvent, Criterion, HostResult, LogRecord, ViewHint } from './types.ts'
+import { renderContention } from './view-contention.ts'
+import { renderFlow } from './view-flow.ts'
 
 interface WhereClause {
   key: string
@@ -34,6 +45,7 @@ function parseCliArgs() {
     options: {
       strict: { type: 'boolean', default: false },
       where: { type: 'string', multiple: true, default: [] },
+      view: { type: 'string' },
       'no-collapse': { type: 'boolean', default: false },
       'no-embed': { type: 'boolean', default: false },
       'no-extra': { type: 'boolean', default: false },
@@ -54,6 +66,11 @@ function parseCliArgs() {
         '  --strict           다른 요청으로 보이는 줄(other)과 위치를 특정하지',
         '                     못한 줄(substring)을 제외한다',
         '  --where key=value  추가 로컬 필터 (반복 가능)',
+        '  --view <이름>       출력 뷰를 고른다: timeline | flow | contention',
+        '                     기본값은 앱 설정(apps.json)의 view 힌트를 따른다',
+        '                       timeline    전 영역 병합 타임라인 (기존 출력)',
+        '                       flow        영역별 블록 + 핸드오프 갭 (순차 파이프라인용)',
+        '                       contention  노드 레인 + Δ 간격 (경쟁 구도용)',
         '  --no-collapse      내용이 똑같이 반복되는 줄을 접지 않는다',
         '  --no-embed         JSON 문자열이 든 필드(body 등)를 풀지 않는다',
         '  --no-extra         나머지 JSON 필드를 출력하지 않는다',
@@ -80,9 +97,18 @@ function parseCliArgs() {
     return n
   }
 
+  let view: ViewName | undefined
+  if (values.view !== undefined) {
+    if (!isViewName(values.view)) {
+      fail(`--view 는 ${VIEW_NAMES.join(' | ')} 중 하나여야 합니다: ${values.view}`)
+    }
+    view = values.view
+  }
+
   return {
     strict: values.strict,
     where: clauses,
+    view,
     collapse: !values['no-collapse'],
     embed: !values['no-embed'],
     showExtra: !values['no-extra'],
@@ -105,6 +131,7 @@ async function main(): Promise<number> {
   let app = ''
   let environment = ''
   let criteria: Criterion[] = []
+  let viewHint: ViewHint | undefined
   let malformed = 0
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
@@ -125,6 +152,8 @@ async function main(): Promise<number> {
         app = event.app ?? ''
         environment = event.environment ?? ''
         criteria = event.fields ?? []
+        // 수집기는 view 힌트를 해석하지 않고 흘리므로 형태 보장이 없다.
+        viewHint = parseViewHint(event.view)
         // 주 식별자만 매칭 종류 판정에 쓴다. 나머지 조건은 수집기가 원격에서
         // 교집합으로 이미 걸러냈으므로 여기서 다시 볼 필요가 없다.
         const primary = criteria[0] ?? { field: '', value: '' }
@@ -227,17 +256,28 @@ async function main(): Promise<number> {
   if (opt.json) {
     renderJsonl(kept, out)
   } else {
-    renderText(
-      kept,
-      areaOrder,
-      {
-        color: opt.color,
-        showExtra: opt.showExtra,
-        extraWidth: opt.extraWidth,
-        valueCap: opt.valueCap,
-      },
-      out,
-    )
+    const textOptions = {
+      color: opt.color,
+      showExtra: opt.showExtra,
+      extraWidth: opt.extraWidth,
+      valueCap: opt.valueCap,
+    }
+
+    // 뷰 선택: --view 플래그 > apps.json 힌트 > 앱 프로필 > timeline.
+    const profile = PROFILES[app]
+    const view = resolveView(opt.view, viewHint, profile)
+
+    switch (view) {
+      case 'flow':
+        renderFlow(kept, areaOrder, textOptions, out)
+        break
+      case 'contention':
+        renderContention(kept, contentionSetup(viewHint, profile), textOptions, out)
+        break
+      case 'timeline':
+        renderText(kept, areaOrder, textOptions, out)
+        break
+    }
   }
 
   renderSummary(kept, hosts, { ...summaryOptions, collapsed }, err)
