@@ -11,7 +11,8 @@
 //
 // 이 파일에는 CLI 관심사(인자 파싱, 검증, 종료코드)만 둔다. 전송 계층은
 // 별도 패키지(apps, inventory, remote, collect)에 있고 그 경계는 컴파일러가
-// 강제한다. 2차에서 stdin JSON 진입점을 붙일 때도 이 파일만 건드리면 된다.
+// 강제한다. HTTP 진입점(--serve, POST /collect)은 server.go 에 있고,
+// 두 진입점은 buildRequest 검증과 execute 실행을 공유한다.
 //
 // 설정은 두 갈래다.
 //
@@ -41,6 +42,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"regexp"
@@ -114,11 +116,17 @@ func run() error {
 		workers  = flag.Int("workers", 0, "동시 실행 수. 0 이면 자동")
 		maxLines = flag.Int("max-lines", 50000, "호스트당 줄 수 상한. 0 이면 무제한")
 		dryRun   = flag.Bool("dry-run", false, "접속 없이 원격 명령만 출력")
+		serve    = flag.String("serve", "",
+			"HTTP 서버로 실행 (예: :8080). POST /collect 가 CLI 와 같은 수집을 실행한다")
 	)
 	flag.Var(&fields, "field", "검색 조건 (반복 가능). 형식: key=value")
 	flag.Var(&areas, "area", "특정 영역만 조회 (반복 가능)")
 	flag.StringVar(inventoryBase, "inventory", *inventoryBase, "-i 의 긴 이름")
 	flag.Parse()
+
+	if *serve != "" {
+		return serveHTTP(*serve, *appsPath, *inventoryBase)
+	}
 
 	// 앱 설정을 먼저 읽는다. 뭘 물어봐야 하는지가 여기서 나오므로,
 	// --app 이 없을 때 쓸 수 있는 앱 목록을 에러에 실을 수 있다.
@@ -133,31 +141,52 @@ func run() error {
 		return err
 	}
 
-	path, err := inventory.Resolve(req.InventoryBase, req.App, req.Env)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	stats, err := execute(ctx, req, os.Stdout)
 	if err != nil {
 		return err
+	}
+	if req.DryRun {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "수집 완료: %d줄, 성공 %d대, 실패 %d대\n",
+		stats.Lines, stats.HostsOK, stats.HostsFailed)
+
+	// 결과가 없으면 1. 파이썬 구현과 같은 규약이다.
+	if stats.Lines == 0 {
+		os.Exit(1)
+	}
+	return nil
+}
+
+// execute 는 검증이 끝난 요청 하나를 실행하고 NDJSON 을 out 에 쓴다.
+// CLI(run)와 HTTP(server.go)가 공유하는 실행 경로다.
+func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, error) {
+	path, err := inventory.Resolve(req.InventoryBase, req.App, req.Env)
+	if err != nil {
+		return collect.Stats{}, err
 	}
 
 	inv, err := inventory.Load(path)
 	if err != nil {
-		return err
+		return collect.Stats{}, err
 	}
 
 	targets, areaOrder, err := buildTargets(inv, req)
 	if err != nil {
-		return err
+		return collect.Stats{}, err
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("조회할 타깃이 없습니다")
+		return collect.Stats{}, fmt.Errorf("조회할 타깃이 없습니다")
 	}
 
 	if req.DryRun {
-		printDryRun(targets, req)
-		return nil
+		printDryRun(out, targets, req)
+		return collect.Stats{}, nil
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	stats := collect.Run(ctx, targets, req.Criteria, collect.Options{
 		App:         req.App,
@@ -171,16 +200,8 @@ func run() error {
 		View:        req.View,
 		TimeFrom:    req.TimeFrom,
 		TimeTo:      req.TimeTo,
-	}, os.Stdout)
-
-	fmt.Fprintf(os.Stderr, "수집 완료: %d줄, 성공 %d대, 실패 %d대\n",
-		stats.Lines, stats.HostsOK, stats.HostsFailed)
-
-	// 결과가 없으면 1. 파이썬 구현과 같은 규약이다.
-	if stats.Lines == 0 {
-		os.Exit(1)
-	}
-	return nil
+	}, out)
+	return stats, nil
 }
 
 func buildRequest(
@@ -446,7 +467,7 @@ func buildTargets(inv *inventory.Inventory, req request) ([]collect.Target, []st
 
 // printDryRun 은 접속 없이 원격에 넘길 스크립트를 보여준다.
 // 같은 (영역, 소스) 조합은 호스트마다 스크립트가 동일하므로 한 번만 찍는다.
-func printDryRun(targets []collect.Target, req request) {
+func printDryRun(out io.Writer, targets []collect.Target, req request) {
 	criteria := make([]string, 0, len(req.Criteria))
 	searchValues := make([]string, 0, len(req.Criteria))
 	for _, c := range req.Criteria {
@@ -469,9 +490,9 @@ func printDryRun(targets []collect.Target, req request) {
 		}
 		shown[key] = true
 
-		fmt.Printf("\n===== %s/%s %s / %v (%s) — 예: ssh %s 'bash -s' =====\n",
+		fmt.Fprintf(out, "\n===== %s/%s %s / %v (%s) — 예: ssh %s 'bash -s' =====\n",
 			req.App, req.Env, t.Area, names, strings.Join(criteria, " "), t.Host)
-		fmt.Print(remote.BuildScript(t.Sources, remote.Query{
+		fmt.Fprint(out, remote.BuildScript(t.Sources, remote.Query{
 			Values:   searchValues,
 			After:    req.After,
 			TimeFrom: req.TimeFrom,
