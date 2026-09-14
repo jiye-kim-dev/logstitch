@@ -58,6 +58,16 @@ export interface MetaEvent {
   environment: string
   /** 검색 조건. 첫 항목이 주 식별자이고 매칭 종류 판정에 쓰인다. */
   fields: Criterion[]
+  /**
+   * 수집기 --from/--to 의 정규화된 UTC 시각 범위 ("2026-09-04T02:19:24.5"
+   * 형태, 존 표기 없음). 원격 awk 는 관대한 프리필터만 한다 — 시각을 못
+   * 읽은 줄과 epoch 숫자 타임스탬프는 그대로 통과한다. 그래서 정확한 범위
+   * 판정은 파서가 나노초로 다시 해야 한다. 없으면 범위 제한 없음.
+   *
+   * timeTo 는 준 정밀도의 구간 끝까지 포함한다 (2026-09-04 면 그날 전체).
+   */
+  timeFrom?: string
+  timeTo?: string
   startedAt: string
   targets: number
   /**

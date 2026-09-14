@@ -19,6 +19,8 @@ type args struct {
 	app    string
 	env    string
 	rid    string
+	from   string
+	to     string
 	fields stringList
 	after  int
 }
@@ -27,7 +29,7 @@ func build(t *testing.T, a args) (request, error) {
 	t.Helper()
 	timeout := 90
 	return buildRequest(testApps, "apps.json", "inventory",
-		a.app, a.env, a.rid, a.fields, nil, a.after, timeout, 0, 0, false)
+		a.app, a.env, a.rid, a.from, a.to, a.fields, nil, a.after, timeout, 0, 0, false)
 }
 
 func criteriaOf(req request) []string {
@@ -175,6 +177,86 @@ func TestBuildRequestRejectsBadInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTimeBoundNormalization 은 --from/--to 가 사전순 비교 가능한 형태
+// (T 구분자, 점 소수, 존 표기 없음)로 정규화되는지 고정한다.
+// 원격 awk 와 파서가 이 형태를 전제로 비교하므로, 여기가 흔들리면
+// 범위 판정이 조용히 어긋난다.
+func TestTimeBoundNormalization(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"날짜만":        {"2026-09-04", "2026-09-04"},
+		"분까지":        {"2026-09-04T02:19", "2026-09-04T02:19"},
+		"초까지":        {"2026-09-04T02:19:24", "2026-09-04T02:19:24"},
+		"나노초 + Z":    {"2026-09-04T02:19:24.568353422Z", "2026-09-04T02:19:24.568353422"},
+		"공백 구분자":     {"2026-09-04 02:19:24", "2026-09-04T02:19:24"},
+		"쉼표 소수":      {"2026-09-04T02:19:24,5", "2026-09-04T02:19:24.5"},
+		"+00:00 존":   {"2026-09-04T02:19:24+00:00", "2026-09-04T02:19:24"},
+		"존 앞 공백":     {"2026-09-04 02:19:24.5 +00:00", "2026-09-04T02:19:24.5"},
+		"빈 값은 경계 없음": {"", ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := normalizeTimeBound("from", c.in)
+			if err != nil {
+				t.Fatalf("normalizeTimeBound(%q) 오류: %v", c.in, err)
+			}
+			if got != c.want {
+				t.Errorf("normalizeTimeBound(%q) = %q (기대 %q)", c.in, got, c.want)
+			}
+		})
+	}
+
+	rejected := map[string]string{
+		"UTC 아닌 오프셋": "2026-09-04T02:19:24+09:00",
+		"시간만":        "02:19:24",
+		"없는 달":       "2026-13-04",
+		"없는 시각":      "2026-09-04T25:00",
+		"자유 형식":      "어제",
+		"epoch 숫자":   "1788488369123",
+	}
+	for name, in := range rejected {
+		t.Run("거부: "+name, func(t *testing.T) {
+			if _, err := normalizeTimeBound("from", in); err == nil {
+				t.Errorf("거부되어야 하는 시각이 통과했다: %q", in)
+			}
+		})
+	}
+}
+
+// TestTimeRangeValidation 은 뒤집힌 범위가 조용히 빈 결과가 되는 대신
+// 거부되는지 본다. from 이 to 의 정밀도 구간 안이면 유효하다.
+func TestTimeRangeValidation(t *testing.T) {
+	t.Run("from 이 to 보다 뒤면 거부", func(t *testing.T) {
+		_, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc",
+			from: "2026-09-05", to: "2026-09-04"})
+		if err == nil {
+			t.Fatal("뒤집힌 범위가 통과했다")
+		}
+	})
+
+	t.Run("from 이 to 의 정밀도 구간 안이면 통과", func(t *testing.T) {
+		// --to 2026-09-04 는 그날 전체를 포함하므로 02:19 부터는 유효한 범위다.
+		req, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc",
+			from: "2026-09-04T02:19", to: "2026-09-04"})
+		if err != nil {
+			t.Fatalf("유효한 범위가 거부됐다: %v", err)
+		}
+		if req.TimeFrom != "2026-09-04T02:19" || req.TimeTo != "2026-09-04" {
+			t.Errorf("범위가 전달되지 않았다: from=%q to=%q", req.TimeFrom, req.TimeTo)
+		}
+	})
+
+	t.Run("한쪽 경계만 줘도 된다", func(t *testing.T) {
+		req, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc",
+			from: "2026-09-04T02:19"})
+		if err != nil {
+			t.Fatalf("from 만 준 요청이 거부됐다: %v", err)
+		}
+		if req.TimeFrom == "" || req.TimeTo != "" {
+			t.Errorf("경계가 잘못 전달됐다: from=%q to=%q", req.TimeFrom, req.TimeTo)
+		}
+	})
 }
 
 // TestAfterConflictsWithMultipleFields 는 --after 가 조용히 무효가 되는 대신

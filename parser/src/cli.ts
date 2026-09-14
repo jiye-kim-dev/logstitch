@@ -13,7 +13,7 @@
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 
-import { FAR_FUTURE_NANOS } from './fields.ts'
+import { FAR_FUTURE_NANOS, parseTs, rangeEndNanos } from './fields.ts'
 import {
   PROFILES,
   VIEW_NAMES,
@@ -133,6 +133,12 @@ async function main(): Promise<number> {
   let criteria: Criterion[] = []
   let viewHint: ViewHint | undefined
   let malformed = 0
+  // 수집기 --from/--to 의 시각 범위. 원격 awk 는 관대한 프리필터라서
+  // (시각을 못 읽은 줄과 epoch 숫자는 통과) 정확한 판정은 여기서 한다.
+  let timeFrom = ''
+  let timeTo = ''
+  let timeFromNanos: bigint | null = null
+  let timeToEndNanos: bigint | null = null // 배타적 상한
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
 
@@ -152,6 +158,18 @@ async function main(): Promise<number> {
         app = event.app ?? ''
         environment = event.environment ?? ''
         criteria = event.fields ?? []
+        // 범위는 수집기가 이미 검증·정규화했다. 그래도 못 읽으면 버전이
+        // 어긋난 것이므로, 필터가 조용히 무효가 되는 대신 소리 내고 죽는다.
+        timeFrom = event.timeFrom ?? ''
+        timeTo = event.timeTo ?? ''
+        if (timeFrom !== '') {
+          timeFromNanos = parseTs(timeFrom)?.nanos ?? null
+          if (timeFromNanos === null) fail(`meta 의 timeFrom 을 해석할 수 없습니다: ${timeFrom}`)
+        }
+        if (timeTo !== '') {
+          timeToEndNanos = rangeEndNanos(timeTo)
+          if (timeToEndNanos === null) fail(`meta 의 timeTo 를 해석할 수 없습니다: ${timeTo}`)
+        }
         // 수집기는 view 힌트를 해석하지 않고 흘리므로 형태 보장이 없다.
         viewHint = parseViewHint(event.view)
         // 주 식별자만 매칭 종류 판정에 쓴다. 나머지 조건은 수집기가 원격에서
@@ -220,6 +238,16 @@ async function main(): Promise<number> {
       (r) => !r.isJson || String(r.fields[clause.key]) === clause.value,
     )
   }
+  if (timeFromNanos !== null || timeToEndNanos !== null) {
+    // 시각을 못 읽은 줄은 통과시킨다 — --where 와 같은 규약. 여기서 자르면
+    // panic 줄을 잃는다. (직전 줄에서 물려받은 시각은 판정에 쓴다.)
+    kept = kept.filter((r) => {
+      if (r.ts === null) return true
+      if (timeFromNanos !== null && r.ts.nanos < timeFromNanos) return false
+      if (timeToEndNanos !== null && r.ts.nanos >= timeToEndNanos) return false
+      return true
+    })
+  }
 
   // ── 정렬 ──────────────────────────────────────────────────────────────
   // 전 구간 UTC 이므로 시각만 맞추면 그대로 정렬된다. 같은 시각이면 원래
@@ -248,7 +276,9 @@ async function main(): Promise<number> {
 
   if (kept.length === 0) {
     const shown = criteria.map((c) => `${c.field}=${c.value}`).join(' AND ')
-    err(`결과 없음: ${shown}`)
+    const range =
+      timeFrom !== '' || timeTo !== '' ? ` (time ${timeFrom || '…'} ~ ${timeTo || '…'})` : ''
+    err(`결과 없음: ${shown}${range}`)
     renderSummary(kept, hosts, summaryOptions, err)
     return 1
   }

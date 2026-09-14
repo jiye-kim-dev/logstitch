@@ -48,6 +48,64 @@ func ShQuote(s string) string {
 // 넘어가서 프로그램 텍스트가 깨진다.
 const awkPrefix = `'$0=="--"{next} {print s "\t" f "\t" $0}'`
 
+// awkTimeRange 는 시각 범위 밖의 줄을 원격에서 걸러내는 awk 프로그램이다.
+// -v from=, -v to= 로 정규화된 UTC 시각 문자열을 받는다 (빈 값 = 경계 없음).
+//
+// grep -F 는 비교를 못 하므로 범위는 awk 가 맡는다. ISO-8601 UTC 문자열은
+// 자릿수가 고정이라 사전순 비교가 곧 시간순 비교다. 이것도 "싸고 관대한"
+// 프리필터일 뿐이다 — 정확한 판정은 파서가 나노초로 다시 한다.
+//
+// 관대함이 핵심 성질이다. 잘못 버린 줄은 파서가 볼 기회가 없으므로,
+// 확신이 없으면 통과시킨다:
+//
+//   - 타임스탬프 키를 못 찾은 줄 (비 JSON panic 줄, grep -A 컨텍스트 줄)
+//   - epoch 숫자 타임스탬프 (사전순 비교 불가 — 파서가 거른다)
+//   - UTC 가 아닌 오프셋 (+09:00 등 — 사전순 비교가 시간순이 아니게 된다)
+//
+// to 는 substr 프리픽스 비교라 준 정밀도의 구간 끝까지 포함한다
+// (to=2026-09-04 면 그날 전체). 파서의 정확 필터와 같은 의미다.
+//
+// POSIX awk 만 쓴다 (gawk 확장, {n} 반복 수량자 금지 — mawk/busybox 호환).
+const awkTimeRange = `'{
+  if (match($0, /"(ts|time|timestamp|@timestamp|eventTime|datetime|date)"[ \t]*:[ \t]*"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9](:[0-9][0-9]([.,][0-9]+)?)? ?(Z|z|[+-][0-9][0-9]:?[0-9][0-9])?"/)) {
+    v = substr($0, RSTART, RLENGTH)
+    sub(/^"[^"]*"[ \t]*:[ \t]*"/, "", v)
+    sub(/"$/, "", v)
+    z = ""
+    if (match(v, / ?(Z|z|[+-][0-9][0-9]:?[0-9][0-9])$/)) {
+      z = substr(v, RSTART, RLENGTH)
+      v = substr(v, 1, RSTART - 1)
+      sub(/^ /, "", z)
+    }
+    if (z == "" || z == "Z" || z == "z" || z == "+00:00" || z == "+0000" || z == "-00:00" || z == "-0000") {
+      gsub(/ /, "T", v)
+      sub(/,/, ".", v)
+      if (from != "" && v < from) next
+      if (to != "" && substr(v, 1, length(to)) > to) next
+    }
+  }
+  print
+}'`
+
+// Query 는 원격에서 로그를 거를 조건 묶음이다.
+type Query struct {
+	// Values 는 grep -F 교집합 검색값이다. 순서가 의미를 가진다 —
+	// 선택적인(결과가 적은) 값을 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
+	Values []string
+
+	// After 는 grep -A 컨텍스트 줄 수다. Values 가 하나일 때만 쓸 수 있다.
+	// 이어붙인 grep 에서는 앞 grep 이 붙인 컨텍스트 줄이 뒤 grep 에 걸리지
+	// 않아 그대로 사라지기 때문이다 (호출부에서 막는다).
+	After int
+
+	// TimeFrom / TimeTo 는 정규화된 UTC 시각 문자열이다
+	// ("2026-09-04T02:19:24.5" 형태 — T 구분자, 존 표기 없음).
+	// 비어 있으면 그쪽 경계가 없다. 정규화는 호출부(main)의 몫이다 —
+	// 여기서 받은 그대로 awk 의 사전순 비교에 들어간다.
+	TimeFrom string
+	TimeTo   string
+}
+
 // BuildScript 는 원격 bash 로 넘길 스크립트를 만든다.
 //
 // 파이썬 remote.build_remote_script 의 이식이며 아래 성질을 그대로 유지한다.
@@ -66,30 +124,33 @@ const awkPrefix = `'$0=="--"{next} {print s "\t" f "\t" $0}'`
 // 왕복이 값 개수만큼 늘고 걸러지기 전 줄이 전부 전송된다. 이어붙이면 왕복
 // 1회에 원격에서 이미 줄어든 것만 넘어온다.
 //
-// values 는 순서가 의미를 가진다. 선택적인(결과가 적은) 값을 앞에 두면
-// 뒤쪽 grep 이 훑을 양이 줄어든다.
-//
-// after 는 값이 하나일 때만 쓸 수 있다. 이어붙인 grep 에서는 앞 grep 이 붙인
-// 컨텍스트 줄이 뒤 grep 에 걸리지 않아 그대로 사라지기 때문이다 (호출부에서
-// 막는다).
-func BuildScript(sources []inventory.Source, values []string, after int) string {
-	if len(values) == 0 {
+// 시각 범위(TimeFrom/TimeTo)가 있으면 grep 체인 뒤에 awkTimeRange 를 한 단
+// 더 붙인다. grep 다음인 이유: grep -F 가 awk 보다 훨씬 싸므로 먼저 줄여야
+// awk 가 훑을 양이 준다. 범위가 없으면 스크립트는 기존과 바이트 단위로 같다.
+func BuildScript(sources []inventory.Source, q Query) string {
+	if len(q.Values) == 0 {
 		return "exit 0\n"
 	}
 
-	first := ShQuote(values[0])
+	first := ShQuote(q.Values[0])
 
 	ctx := ""
-	if after > 0 {
-		ctx = fmt.Sprintf("-A %d ", after)
+	if q.After > 0 {
+		ctx = fmt.Sprintf("-A %d ", q.After)
 	}
 
 	// 두 번째 값부터는 파이프로 이어붙인다.
 	var chain strings.Builder
-	for _, value := range values[1:] {
+	for _, value := range q.Values[1:] {
 		fmt.Fprintf(&chain, " | grep -F -a -e %s", ShQuote(value))
 	}
 	rest := chain.String()
+
+	timeFilter := ""
+	if q.TimeFrom != "" || q.TimeTo != "" {
+		timeFilter = fmt.Sprintf(" | awk -v from=%s -v to=%s %s",
+			ShQuote(q.TimeFrom), ShQuote(q.TimeTo), awkTimeRange)
+	}
 
 	var b strings.Builder
 	for _, src := range sources {
@@ -99,11 +160,11 @@ func BuildScript(sources []inventory.Source, values []string, after int) string 
 			b.WriteString("  [ -r \"$f\" ] || continue\n")
 			b.WriteString("  case \"$f\" in\n")
 			fmt.Fprintf(&b,
-				"    *.gz) gzip -cd -- \"$f\" 2>/dev/null | grep -F -a %s-e %s%s ;;\n",
-				ctx, first, rest)
+				"    *.gz) gzip -cd -- \"$f\" 2>/dev/null | grep -F -a %s-e %s%s%s ;;\n",
+				ctx, first, rest, timeFilter)
 			fmt.Fprintf(&b,
-				"    *)    grep -F -a -h %s-e %s -- \"$f\" 2>/dev/null%s ;;\n",
-				ctx, first, rest)
+				"    *)    grep -F -a -h %s-e %s -- \"$f\" 2>/dev/null%s%s ;;\n",
+				ctx, first, rest, timeFilter)
 			b.WriteString("  esac | awk -v f=\"$f\" -v s=" + qsrc + " " + awkPrefix + "\n")
 			b.WriteString("done\n")
 		}

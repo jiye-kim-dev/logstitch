@@ -187,6 +187,9 @@ $LS --rid abc123 --area scheduler | logstitch-parse  # 특정 영역만
 $LS --rid abc123 --after 20 | logstitch-parse        # 스택트레이스 뒤 20줄까지
 $LS --field content_id=555 | logstitch-parse         # 임의 필드로 검색
 
+$LS --rid abc123 --from 2026-09-04T02:19 --to 2026-09-04T02:20 | logstitch-parse
+                                                     # UTC 시각 범위만 (한쪽만 줘도 됨)
+
 $LS --rid abc123 | logstitch-parse --strict          # 필드 정확일치만
 $LS --rid abc123 | logstitch-parse --value-cap 0     # 긴 값(ffmpeg 명령줄 등) 통째로
 $LS --rid abc123 | logstitch-parse --json > t.jsonl  # 나중에 시각화용
@@ -235,6 +238,22 @@ grep -F -e abc | grep -F -e s1 | grep -F -e n7
 그래서 `--after` 는 조건이 하나일 때만 쓸 수 있다. 이어붙인 grep 에서는 앞
 grep 이 붙인 컨텍스트 줄이 뒤 grep 에 걸리지 않아 그대로 사라지므로, 조용히
 무효가 되는 대신 거부한다.
+
+### 시각 범위는 grep 뒤의 awk 가 거른다
+
+`--from` / `--to` 를 주면 grep 체인 뒤에 awk 필터를 한 단 더 붙인다.
+grep -F 는 비교를 못 하지만, ISO-8601 UTC 문자열은 자릿수가 고정이라
+**사전순 비교가 곧 시간순 비교**다. 전 구간 UTC 전제이므로 입력도 UTC 로 준다.
+
+- 형식: `YYYY-MM-DD[THH:MM[:SS[.소수초]]][Z]` (공백 구분자도 허용)
+- `--to` 는 준 정밀도의 **구간 끝까지 포함**한다 — `--to 2026-09-04` 는 그날
+  전체, `--to …02:19` 는 그 분 전체
+- 한쪽만 주면 그쪽 경계만 적용되고, 둘 다 없으면 기존과 같은 전체 검색이다
+
+이것도 "싸고 관대한" 프리필터일 뿐이다. 시각을 못 읽는 줄(비 JSON panic 줄,
+epoch 숫자 타임스탬프, UTC 아닌 오프셋)은 원격에서 버리지 않고 넘긴 뒤,
+파서가 나노초로 정확히 다시 거른다 — 잘못 버린 줄은 파서가 볼 기회가 없기
+때문이다. 시각이 아예 없는 줄은 파서에서도 통과시킨다 (`--where` 와 같은 규약).
 
 **왜 원격에서 정확히 필터하지 않는가** — `grep -F '"rid":"abc"'` 는 직렬화 형태
 (콜론 뒤 공백, 키 순서, 숫자/문자열)에 의존해서 모듈 언어가 다르면 조용히 안 걸린다.

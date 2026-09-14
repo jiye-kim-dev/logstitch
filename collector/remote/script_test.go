@@ -66,7 +66,7 @@ func TestBuildScriptInvariants(t *testing.T) {
 		{Name: "app", Paths: []string{"/var/log/kollus/ai-stt/requester/requester.log*"}},
 		{Name: "debug", Paths: []string{"/var/log/kollus/ai-stt-scheduler/debug.log*"}},
 	}
-	script := BuildScript(sources, []string{"rid-7f3a91"}, 0)
+	script := BuildScript(sources, Query{Values: []string{"rid-7f3a91"}})
 
 	// glob 은 원격 셸이 확장해야 하므로 인용되면 안 된다.
 	if !strings.Contains(script, "for f in /var/log/kollus/ai-stt/requester/requester.log*; do") {
@@ -94,7 +94,7 @@ func TestBuildScriptInvariants(t *testing.T) {
 		}
 	}
 
-	withCtx := BuildScript(sources[:1], []string{"x"}, 20)
+	withCtx := BuildScript(sources[:1], Query{Values: []string{"x"}, After: 20})
 	if !strings.Contains(withCtx, "-A 20") {
 		t.Error("--after 가 grep -A 로 전달되지 않았다")
 	}
@@ -113,7 +113,7 @@ func TestBuildScriptIntersection(t *testing.T) {
 	sources := []inventory.Source{
 		{Name: "app", Paths: []string{"/var/log/app.log*"}},
 	}
-	script := BuildScript(sources, []string{"abc", "s1", "n7"}, 0)
+	script := BuildScript(sources, Query{Values: []string{"abc", "s1", "n7"}})
 
 	// 일반 파일 분기: grep 하나 뒤에 두 개가 파이프로 붙어야 한다.
 	if !strings.Contains(script, "grep -F -a -h -e abc -- \"$f\" 2>/dev/null | grep -F -a -e s1 | grep -F -a -e n7") {
@@ -129,13 +129,113 @@ func TestBuildScriptIntersection(t *testing.T) {
 	}
 
 	// 인용이 필요한 값도 이어붙는 자리에서 안전해야 한다.
-	quoted := BuildScript(sources, []string{"a", "it's b"}, 0)
+	quoted := BuildScript(sources, Query{Values: []string{"a", "it's b"}})
 	if !strings.Contains(quoted, `| grep -F -a -e 'it'\''s b'`) {
 		t.Errorf("이어붙인 값이 인용되지 않았다:\n%s", quoted)
 	}
 
 	// 값이 없으면 아무것도 하지 않는다.
-	if BuildScript(sources, nil, 0) != "exit 0\n" {
+	if BuildScript(sources, Query{}) != "exit 0\n" {
 		t.Error("값이 없는데 스크립트가 생성됐다")
 	}
+}
+
+// TestBuildScriptTimeRange 는 시각 범위가 스크립트에 반영되는 형태를 고정한다.
+func TestBuildScriptTimeRange(t *testing.T) {
+	sources := []inventory.Source{
+		{Name: "app", Paths: []string{"/var/log/app.log*"}},
+	}
+
+	// 범위가 없으면 스크립트는 기존과 완전히 같아야 한다 (awk 필터 없음).
+	plain := BuildScript(sources, Query{Values: []string{"abc"}})
+	if strings.Contains(plain, "-v from=") {
+		t.Error("범위가 없는데 시각 필터가 들어갔다")
+	}
+
+	ranged := BuildScript(sources, Query{
+		Values:   []string{"abc"},
+		TimeFrom: "2026-09-04T02:19",
+		TimeTo:   "2026-09-04T02:20",
+	})
+	// grep 체인 "뒤"에 붙어야 한다 — grep 이 먼저 줄여야 awk 가 훑을 양이 준다.
+	if !strings.Contains(ranged, "grep -F -a -h -e abc -- \"$f\" 2>/dev/null | awk -v from=2026-09-04T02:19 -v to=2026-09-04T02:20") {
+		t.Errorf("시각 필터가 grep 뒤에 붙지 않았다:\n%s", ranged)
+	}
+	// .gz 분기에도 같은 필터가 있어야 한다.
+	if got := strings.Count(ranged, "-v from=2026-09-04T02:19"); got != 2 {
+		t.Errorf("시각 필터가 %d군데다 (기대: 일반/.gz 두 분기)", got)
+	}
+
+	// 한쪽 경계만 줘도 필터가 붙는다. 빈 쪽은 '' 로 넘어간다.
+	fromOnly := BuildScript(sources, Query{Values: []string{"abc"}, TimeFrom: "2026-09-04"})
+	if !strings.Contains(fromOnly, "-v from=2026-09-04 -v to=''") {
+		t.Errorf("from 만 준 경우가 처리되지 않았다:\n%s", fromOnly)
+	}
+}
+
+// runAwkTimeRange 는 awkTimeRange 프로그램을 실제 awk 로 돌려 결과 줄을 돌려준다.
+// ShQuote 라운드트립처럼 텍스트가 아니라 동작을 검증한다 — 여기서 잘못
+// 버려진 줄은 파서가 볼 기회가 없으므로, 이 프로그램의 관대함이 핵심이다.
+func runAwkTimeRange(t *testing.T, from, to string, lines []string) []string {
+	t.Helper()
+	cmd := exec.Command("sh", "-c",
+		"awk -v from="+ShQuote(from)+" -v to="+ShQuote(to)+" "+awkTimeRange)
+	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n") + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("awk 실행 실패: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(got) == 1 && got[0] == "" {
+		return nil
+	}
+	return got
+}
+
+func TestAwkTimeRangeBehavior(t *testing.T) {
+	in := `{"time":"2026-09-04T02:19:24.568353422Z","msg":"in-range iso"}`
+	before := `{"time":"2026-09-04T02:18:59.999999999Z","msg":"before"}`
+	after := `{"time":"2026-09-04T02:21:00.000000000Z","msg":"after"}`
+	spaceOffset := `{"ts":"2026-09-04 02:19:26.000000 +00:00","msg":"in-range space+offset"}`
+
+	t.Run("범위 안은 남고 밖은 떨어진다", func(t *testing.T) {
+		got := runAwkTimeRange(t, "2026-09-04T02:19", "2026-09-04T02:20",
+			[]string{before, in, spaceOffset, after})
+		if len(got) != 2 || !strings.Contains(got[0], "in-range iso") ||
+			!strings.Contains(got[1], "space+offset") {
+			t.Errorf("범위 판정이 틀렸다: %v", got)
+		}
+	})
+
+	t.Run("to 는 준 정밀도 구간 끝까지 포함한다", func(t *testing.T) {
+		// to=...:24 는 24초 구간 전체(24.568 포함)를 포함하고 25초는 뺀다.
+		sec25 := `{"time":"2026-09-04T02:19:25.000000000Z","msg":"sec25"}`
+		got := runAwkTimeRange(t, "", "2026-09-04T02:19:24", []string{in, sec25})
+		if len(got) != 1 || !strings.Contains(got[0], "in-range iso") {
+			t.Errorf("to 프리픽스 포함 판정이 틀렸다: %v", got)
+		}
+	})
+
+	t.Run("from 은 경계 시각 자체를 포함한다", func(t *testing.T) {
+		exact := `{"time":"2026-09-04T02:19:24.000000000Z","msg":"exact"}`
+		got := runAwkTimeRange(t, "2026-09-04T02:19:24", "", []string{before, exact})
+		if len(got) != 1 || !strings.Contains(got[0], "exact") {
+			t.Errorf("from 경계 판정이 틀렸다: %v", got)
+		}
+	})
+
+	t.Run("확신 없는 줄은 통과한다", func(t *testing.T) {
+		// 잘못 버린 줄은 파서가 볼 기회가 없다. 시각을 못 읽으면 남긴다.
+		lenient := []string{
+			`panic: runtime error: invalid memory address`,     // 비 JSON
+			`{"timestamp":1788488369123,"msg":"epoch"}`,        // epoch 숫자 — 사전순 비교 불가
+			`{"time":"2026-09-04T11:19:24+09:00","msg":"kst"}`, // UTC 아닌 오프셋
+			`--`, // grep -A 구분선 (뒤 awk 가 버린다)
+		}
+		got := runAwkTimeRange(t, "2026-09-04T02:19", "2026-09-04T02:20", lenient)
+		if len(got) != len(lenient) {
+			t.Errorf("확신 없는 줄이 버려졌다 (기대 %d줄, 실제 %d줄): %v",
+				len(lenient), len(got), got)
+		}
+	})
 }

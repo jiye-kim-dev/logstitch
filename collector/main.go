@@ -28,6 +28,10 @@
 //	logstitch --app forwarder --env prod \
 //	  --field stream_key=abc --field session_id=s1 --field node_id=n7
 //
+//	logstitch --app ai-stt --env prod --rid abc123 \
+//	  --from 2026-09-04T02:00 --to 2026-09-04T03:00
+//	  → UTC 시각 범위 밖의 줄은 원격에서 걸러 전송하지 않는다
+//
 // 접속 대상은 인벤토리에 적힌 호스트뿐이다. 명령줄로 호스트를 넘기는 방법은
 // 없다 — 어디에 붙는지가 파일 하나에만 적혀 있어야 검토가 가능하다.
 package main
@@ -39,6 +43,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -64,6 +69,10 @@ type request struct {
 	// Criteria 는 검색 조건이다. 앱의 required 순서가 앞에 오고,
 	// 추가로 준 필드가 뒤에 붙는다.
 	Criteria []collect.Criterion
+	// TimeFrom / TimeTo 는 --from/--to 를 정규화한 UTC 시각 문자열이다
+	// ("2026-09-04T02:19:24.5" 형태). 비어 있으면 그쪽 경계 없이 전체 검색.
+	TimeFrom string
+	TimeTo   string
 	// View 는 앱 설정의 표현 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
 	View       json.RawMessage
 	Areas      []string
@@ -91,11 +100,15 @@ func run() error {
 		appsPath      = flag.String("apps", apps.DefaultPath, "앱 설정 JSON 경로")
 		inventoryBase = flag.String("i", "inventory",
 			"인벤토리 기본 이름. --app/--env 와 합쳐 <기본이름>.<앱>.<환경>.json 을 읽는다")
-		app      = flag.String("app", "", "대상 애플리케이션 (필수). 예: ai-stt")
-		env      = flag.String("env", "", "대상 환경 (필수). 예: prod, stage, dev")
-		rid      = flag.String("rid", "", "--field rid=<값> 의 축약형")
-		fields   stringList
-		areas    stringList
+		app    = flag.String("app", "", "대상 애플리케이션 (필수). 예: ai-stt")
+		env    = flag.String("env", "", "대상 환경 (필수). 예: prod, stage, dev")
+		rid    = flag.String("rid", "", "--field rid=<값> 의 축약형")
+		fields stringList
+		areas  stringList
+		from   = flag.String("from", "",
+			"이 UTC 시각부터의 로그만 (YYYY-MM-DD[THH:MM[:SS[.소수]]][Z]). 비우면 처음부터")
+		to = flag.String("to", "",
+			"이 UTC 시각까지의 로그만 — 준 정밀도 구간 끝까지 포함 (--to 2026-09-04 는 그날 전체). 비우면 끝까지")
 		after    = flag.Int("after", 0, "grep 컨텍스트 줄 수 (스택트레이스용). 필드가 하나일 때만")
 		timeout  = flag.Int("timeout", 90, "호스트당 타임아웃(초)")
 		workers  = flag.Int("workers", 0, "동시 실행 수. 0 이면 자동")
@@ -114,8 +127,8 @@ func run() error {
 		return err
 	}
 
-	req, err := buildRequest(appCfg, *appsPath, *inventoryBase, *app, *env, *rid, fields,
-		areas, *after, *timeout, *workers, *maxLines, *dryRun)
+	req, err := buildRequest(appCfg, *appsPath, *inventoryBase, *app, *env, *rid, *from, *to,
+		fields, areas, *after, *timeout, *workers, *maxLines, *dryRun)
 	if err != nil {
 		return err
 	}
@@ -156,6 +169,8 @@ func run() error {
 		MaxLines:    req.MaxLines,
 		Areas:       areaOrder,
 		View:        req.View,
+		TimeFrom:    req.TimeFrom,
+		TimeTo:      req.TimeTo,
 	}, os.Stdout)
 
 	fmt.Fprintf(os.Stderr, "수집 완료: %d줄, 성공 %d대, 실패 %d대\n",
@@ -170,7 +185,7 @@ func run() error {
 
 func buildRequest(
 	appCfg *apps.Config,
-	appsPath, inventoryBase, app, env, rid string,
+	appsPath, inventoryBase, app, env, rid, from, to string,
 	fields, areas stringList,
 	after, timeout, workers, maxLines int,
 	dryRun bool,
@@ -228,12 +243,29 @@ func buildRequest(
 		return request{}, fmt.Errorf("--timeout 은 양수여야 합니다")
 	}
 
+	timeFrom, err := normalizeTimeBound("from", from)
+	if err != nil {
+		return request{}, err
+	}
+	timeTo, err := normalizeTimeBound("to", to)
+	if err != nil {
+		return request{}, err
+	}
+	// from 이 to 의 프리픽스면 to 의 정밀도 구간 안이므로 유효한 범위다
+	// (예: --from 2026-09-04T02:19 --to 2026-09-04 는 그날 02:19 부터 끝까지).
+	if timeFrom != "" && timeTo != "" &&
+		!strings.HasPrefix(timeFrom, timeTo) && timeFrom > timeTo {
+		return request{}, fmt.Errorf("--from(%s) 이 --to(%s) 보다 뒤입니다", timeFrom, timeTo)
+	}
+
 	return request{
 		AppsPath:      appsPath,
 		InventoryBase: inventoryBase,
 		App:           app,
 		Env:           env,
 		Criteria:      criteria,
+		TimeFrom:      timeFrom,
+		TimeTo:        timeTo,
 		View:          appDef.View,
 		Areas:         areas,
 		After:         after,
@@ -242,6 +274,41 @@ func buildRequest(
 		MaxLines:      maxLines,
 		DryRun:        dryRun,
 	}, nil
+}
+
+// timeBoundRE 는 --from/--to 가 받는 UTC 시각 형식이다. 날짜만 줘도 되고
+// 분·초·소수 초까지 점진적으로 늘릴 수 있다. 존 표기는 UTC 만 허용한다 —
+// 전 구간 UTC 전제라, 다른 오프셋을 받으면 원격 awk 의 사전순 비교와
+// 파서의 판정이 어긋난다.
+var timeBoundRE = regexp.MustCompile(
+	`^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:[.,]\d{1,9})?)?))? ?(Z|z|\+00:?00|-00:?00)?$`)
+
+// normalizeTimeBound 는 --from/--to 값을 사전순 비교가 곧 시간순 비교가 되는
+// 형태("2026-09-04T02:19:24.5" — T 구분자, 점 소수, 존 표기 없음)로 바꾼다.
+// 원격 awk 와 파서가 이 형태를 그대로 받는다. 빈 입력은 "경계 없음"이다.
+func normalizeTimeBound(flagName, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+
+	m := timeBoundRE.FindStringSubmatch(raw)
+	if m == nil {
+		return "", fmt.Errorf(
+			"--%s 형식은 YYYY-MM-DD[THH:MM[:SS[.소수초]]][Z] (UTC) 입니다: %q", flagName, raw)
+	}
+
+	out := m[1]
+	if m[2] != "" {
+		out += "T" + strings.ReplaceAll(m[2], ",", ".")
+	}
+	// 정규화된 out 은 성분별 고정폭이라 layout 을 같은 길이로 잘라 쓰면 된다.
+	layout := "2006-01-02T15:04:05.999999999"[:len(out)]
+	// 정규식은 2026-13-99 같은 값도 통과시키므로 실제 달력 검증은 여기서 한다.
+	if _, err := time.Parse(layout, out); err != nil {
+		return "", fmt.Errorf("--%s 가 실제 시각이 아닙니다: %q", flagName, raw)
+	}
+	return out, nil
 }
 
 // parseFields 는 key=value 목록을 파싱한다. 같은 키를 두 번 주면 거부한다.
@@ -386,6 +453,9 @@ func printDryRun(targets []collect.Target, req request) {
 		criteria = append(criteria, c.Field+"="+c.Value)
 		searchValues = append(searchValues, c.Value)
 	}
+	if req.TimeFrom != "" || req.TimeTo != "" {
+		criteria = append(criteria, fmt.Sprintf("time=[%s~%s]", req.TimeFrom, req.TimeTo))
+	}
 
 	shown := make(map[string]bool)
 	for _, t := range targets {
@@ -401,6 +471,11 @@ func printDryRun(targets []collect.Target, req request) {
 
 		fmt.Printf("\n===== %s/%s %s / %v (%s) — 예: ssh %s 'bash -s' =====\n",
 			req.App, req.Env, t.Area, names, strings.Join(criteria, " "), t.Host)
-		fmt.Print(remote.BuildScript(t.Sources, searchValues, req.After))
+		fmt.Print(remote.BuildScript(t.Sources, remote.Query{
+			Values:   searchValues,
+			After:    req.After,
+			TimeFrom: req.TimeFrom,
+			TimeTo:   req.TimeTo,
+		}))
 	}
 }

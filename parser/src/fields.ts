@@ -149,6 +149,35 @@ export function sniffTs(line: string): Ts | null {
 }
 
 /**
+ * 범위 상한(--to)의 배타적 끝 나노초.
+ *
+ * "그 시각 이하"가 아니라 "준 정밀도의 구간 끝까지"다 — --to 2026-09-04 는
+ * 그날 전체, --to ...02:19 는 그 분 전체를 포함해야 직관과 맞고, 수집기의
+ * 원격 awk 프리필터(프리픽스 비교)와도 같은 의미가 된다. 그래서 주어진
+ * 정밀도의 한 눈금을 더해 배타적 상한으로 만든다. 못 읽으면 null.
+ */
+export function rangeEndNanos(text: string): bigint | null {
+  const m = ISO_RE.exec(text.trim())
+  if (m === null) return null
+  const base = fromIso(text)
+  if (base === null) return null
+
+  const time = m[2]
+  const frac = m[3]
+  let granule: bigint
+  if (time === undefined) {
+    granule = 86_400n * 1_000_000_000n // 날짜만 → 하루
+  } else if (frac !== undefined) {
+    granule = 10n ** BigInt(9 - frac.length) // 소수 n자리 → 그 자릿수 한 눈금
+  } else if (time.length === 5) {
+    granule = 60n * 1_000_000_000n // HH:MM → 1분
+  } else {
+    granule = 1_000_000_000n // HH:MM:SS → 1초
+  }
+  return base.nanos + granule
+}
+
+/**
  * 별칭 목록에서 처음으로 값이 있는 키를 고른다.
  * 파이썬 pick 과 같이 null 과 빈 문자열은 없는 것으로 본다 (0 과 false 는 유효).
  */

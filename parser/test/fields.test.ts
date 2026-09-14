@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { callerOf, parseEmbeddedJson, parseTs, pick, stripVolatile } from '../src/fields.ts'
+import {
+  callerOf,
+  parseEmbeddedJson,
+  parseTs,
+  pick,
+  rangeEndNanos,
+  stripVolatile,
+} from '../src/fields.ts'
 
 describe('parseTs', () => {
   it('ISO Z 나노초 9자리를 나노초까지 보존한다', () => {
@@ -48,6 +55,46 @@ describe('parseTs', () => {
     assert.equal(parseTs(null), null)
     assert.equal(parseTs('not a time'), null)
     assert.equal(parseTs(12345), null)
+  })
+})
+
+describe('rangeEndNanos', () => {
+  const nanosOf = (text: string): bigint => {
+    const ts = parseTs(text)
+    assert.ok(ts !== null)
+    return ts.nanos
+  }
+
+  it('날짜만 주면 그날 전체를 포함한다 (배타적 상한 = 다음날 자정)', () => {
+    // --to 2026-09-04 가 자정 한 순간이 되면 사실상 아무것도 안 잡힌다.
+    assert.equal(rangeEndNanos('2026-09-04'), nanosOf('2026-09-05T00:00:00Z'))
+  })
+
+  it('분/초 정밀도는 그 눈금 하나만큼 늘어난다', () => {
+    assert.equal(rangeEndNanos('2026-09-04T02:19'), nanosOf('2026-09-04T02:20:00Z'))
+    assert.equal(rangeEndNanos('2026-09-04T02:19:24'), nanosOf('2026-09-04T02:19:25Z'))
+  })
+
+  it('소수 초는 준 자릿수의 한 눈금이다', () => {
+    assert.equal(rangeEndNanos('2026-09-04T02:19:24.5'), nanosOf('2026-09-04T02:19:24.6Z'))
+    assert.equal(
+      rangeEndNanos('2026-09-04T02:19:24.568353422'),
+      nanosOf('2026-09-04T02:19:24.568353422Z') + 1n,
+    )
+  })
+
+  it('수집기가 걸러낸 24.568 줄이 to=…24 범위에 남는 것과 같은 판정이다', () => {
+    // 원격 awk 는 프리픽스 비교로 24초 구간 전체를 포함한다. 여기서 상한을
+    // 24.000 으로 두면 원격과 로컬 판정이 어긋나 줄이 조용히 사라진다.
+    const end = rangeEndNanos('2026-09-04T02:19:24')
+    assert.ok(end !== null)
+    assert.ok(nanosOf('2026-09-04T02:19:24.568353422Z') < end)
+    assert.ok(nanosOf('2026-09-04T02:19:25.000000000Z') >= end)
+  })
+
+  it('못 읽는 값은 null', () => {
+    assert.equal(rangeEndNanos('not a time'), null)
+    assert.equal(rangeEndNanos(''), null)
   })
 })
 

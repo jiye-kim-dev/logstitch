@@ -57,14 +57,19 @@ const (
 // MetaEvent 는 스트림 맨 앞에 한 번 나온다. 파서가 무엇을 찾는 스트림인지
 // 알아야 매칭 종류를 판정할 수 있다.
 type MetaEvent struct {
-	Type        string          `json:"type"` // "meta"
-	App         string          `json:"app"`
-	Environment string          `json:"environment"`
-	Fields      []Criterion     `json:"fields"`
-	StartedAt   string          `json:"startedAt"`
-	Targets     int             `json:"targets"`
-	Areas       []string        `json:"areas"`
-	View        json.RawMessage `json:"view,omitempty"`
+	Type        string      `json:"type"` // "meta"
+	App         string      `json:"app"`
+	Environment string      `json:"environment"`
+	Fields      []Criterion `json:"fields"`
+	// TimeFrom / TimeTo 는 --from/--to 의 정규화된 UTC 시각 범위다.
+	// 원격 awk 는 관대한 프리필터만 하므로 (시각을 못 읽은 줄과 epoch 숫자는
+	// 통과) 정확한 범위 판정은 파서가 나노초로 다시 해야 한다.
+	TimeFrom  string          `json:"timeFrom,omitempty"`
+	TimeTo    string          `json:"timeTo,omitempty"`
+	StartedAt string          `json:"startedAt"`
+	Targets   int             `json:"targets"`
+	Areas     []string        `json:"areas"`
+	View      json.RawMessage `json:"view,omitempty"`
 }
 
 // LineEvent 는 원격에서 grep 에 걸린 로그 한 줄이다.
@@ -102,6 +107,8 @@ type Options struct {
 	MaxLines    int             // 호스트당 상한. 0 이면 무제한.
 	Areas       []string        // 인벤토리 정의 순서. meta 이벤트로 파서에 넘긴다.
 	View        json.RawMessage // 앱 설정의 표현 힌트. 해석 없이 meta 로 전달.
+	TimeFrom    string          // 정규화된 UTC 시각 하한. 비면 없음. 원격 프리필터 + meta 전달.
+	TimeTo      string          // 정규화된 UTC 시각 상한 (준 정밀도 구간 끝까지 포함). 비면 없음.
 }
 
 // Stats 는 종료 코드 결정에 쓸 최소한의 집계다.
@@ -158,6 +165,8 @@ func Run(
 		App:         opt.App,
 		Environment: opt.Environment,
 		Fields:      criteria,
+		TimeFrom:    opt.TimeFrom,
+		TimeTo:      opt.TimeTo,
 		StartedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Targets:     len(targets),
 		Areas:       opt.Areas,
@@ -194,7 +203,12 @@ func Run(
 }
 
 func runOne(ctx context.Context, t Target, searchValues []string, opt Options, events chan<- any) {
-	script := remote.BuildScript(t.Sources, searchValues, opt.After)
+	script := remote.BuildScript(t.Sources, remote.Query{
+		Values:   searchValues,
+		After:    opt.After,
+		TimeFrom: opt.TimeFrom,
+		TimeTo:   opt.TimeTo,
+	})
 
 	cctx, cancel := context.WithTimeout(ctx, opt.Timeout)
 	defer cancel()
