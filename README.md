@@ -173,12 +173,15 @@ go build -C collector -o ../.bin/logstitch .
 # 의존성은 타입체크·테스트용으로만 필요하다.
 (cd parser && npm install)
 
-# 파서를 이름으로 부르고 싶으면
-chmod +x parser/src/cli.ts
-ln -s "$PWD/parser/src/cli.ts" .bin/logstitch-parse
-
-export PATH="$PWD/.bin:$PATH"
+# 파서를 이름으로 부른다 — package.json 의 bin("logstitch-parse")을 npm 이
+# 전역 bin 에 링크해준다. 수동 심볼릭 링크도 PATH 편집도 필요 없다.
+(cd parser && npm link)
 ```
+
+`npm link` 뒤에는 어디서든 `logstitch-parse` 로 부를 수 있다. 수집기 바이너리는
+파서가 저장소의 `.bin/logstitch` 를 스스로 찾으므로(단일 진입점 절 참고), 단일
+진입점만 쓴다면 이걸로 끝이다. 파이프 모드로 수집기를 직접 부르고 싶을 때만
+`export PATH="$PWD/.bin:$PATH"` 를 추가한다. 링크 해제는 `npm rm -g logstitch-parser`.
 
 `./test/e2e.sh` 도 첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도
 `.bin/logstitch` 가 생긴다.
