@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import {
+  DEFAULT_ALIASES,
   callerOf,
+  mergeAliases,
   parseEmbeddedJson,
+  parseParserHint,
   parseTs,
   pick,
   rangeEndNanos,
@@ -151,5 +154,43 @@ describe('stripVolatile', () => {
       body: { timestamp: 'y', state: 'STARTED' },
     })
     assert.deepEqual(out, { msg: 'keep', body: { state: 'STARTED' } })
+  })
+})
+
+describe('parseParserHint', () => {
+  it('객체가 아니면 undefined', () => {
+    assert.equal(parseParserHint(undefined), undefined)
+    assert.equal(parseParserHint('tsKeys'), undefined)
+    assert.equal(parseParserHint(['tsKeys']), undefined)
+    assert.equal(parseParserHint(null), undefined)
+  })
+
+  it('문자열이 아닌 항목과 빈 문자열은 조용히 버린다', () => {
+    // 수집기는 해석 없이 흘리므로 형태 보장이 없다 — 죽는 대신 거른다.
+    const hint = parseParserHint({ tsKeys: ['event_time', 3, '', '  '], msgKeys: 'oops' })
+    assert.deepEqual(hint, { tsKeys: ['event_time'] })
+  })
+
+  it('쓸 만한 키가 하나도 없으면 undefined', () => {
+    assert.equal(parseParserHint({ tsKeys: [], msgKeys: [3] }), undefined)
+  })
+})
+
+describe('mergeAliases', () => {
+  it('힌트가 없으면 전역 별칭 그대로', () => {
+    assert.equal(mergeAliases(undefined), DEFAULT_ALIASES)
+  })
+
+  it('앱 키가 전역 별칭 앞에 온다', () => {
+    const merged = mergeAliases({ tsKeys: ['event_time'] })
+    assert.equal(merged.ts[0], 'event_time')
+    assert.ok(merged.ts.includes('ts'))
+  })
+
+  it('앱의 ts·caller 키는 지문 제거 대상에 들어간다', () => {
+    const merged = mergeAliases({ tsKeys: ['event_time'], callerKeys: ['origin'] })
+    assert.ok(merged.volatile.has('event_time'))
+    assert.ok(merged.volatile.has('origin'))
+    assert.ok(merged.volatile.has('ts')) // 전역 것도 유지
   })
 })

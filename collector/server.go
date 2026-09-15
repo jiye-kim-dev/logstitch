@@ -32,10 +32,11 @@ type apiRequest struct {
 	After  int               `json:"after"`
 	// Timeout 0 은 CLI 기본값(90초)을 쓴다. MaxLines 는 명시적 0(무제한)과
 	// 미지정(기본 50000)을 구분해야 해서 포인터다.
-	Timeout  int  `json:"timeout"`
-	Workers  int  `json:"workers"`
-	MaxLines *int `json:"max_lines"`
-	DryRun   bool `json:"dry_run"`
+	Timeout    int  `json:"timeout"`
+	Workers    int  `json:"workers"`
+	MaxLines   *int `json:"max_lines"`
+	NoRequired bool `json:"no_required"`
+	DryRun     bool `json:"dry_run"`
 }
 
 func serveHTTP(addr, appsPath, inventoryBase string) error {
@@ -105,5 +106,6 @@ func buildAPIRequest(body apiRequest, appsPath, inventoryBase string) (request, 
 
 	return buildRequest(appCfg, appsPath, inventoryBase,
 		body.App, body.Env, "", body.From, body.To,
-		fields, body.Areas, body.After, timeout, body.Workers, maxLines, body.DryRun)
+		fields, body.Areas, body.After, timeout, body.Workers, maxLines,
+		body.NoRequired, body.DryRun)
 }

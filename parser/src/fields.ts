@@ -3,10 +3,11 @@
  *
  * 모듈마다 로거가 달라서 타임스탬프 키가 ts / time / timestamp 로 갈린다.
  * 모듈별 파서를 만드는 대신 아래 별칭 목록에 한 줄 추가해서 흡수한다.
- * 실제 환경에 맞추려면 이 파일 상단만 고치면 된다.
+ * 실제 환경에 맞추려면 이 파일 상단만 고치면 된다. 특정 앱에만 있는 키는
+ * 코드 수정 없이 apps.json 의 parser 힌트로 얹는다 (mergeAliases 참고).
  */
 
-import type { Ts } from './types.ts'
+import type { ParserHint, Ts } from './types.ts'
 
 export const TS_KEYS = [
   'ts', 'time', 'timestamp', '@timestamp', 'eventTime', 'datetime', 'date',
@@ -33,6 +34,65 @@ export const VOLATILE_KEYS: ReadonlySet<string> = new Set<string>([
   ...TS_KEYS,
   ...CALLER_KEYS,
 ])
+
+/**
+ * 정규화에 쓰는 별칭 한 벌. 기본은 위의 전역 목록이고, apps.json 의 parser
+ * 힌트가 있으면 mergeAliases 가 앱별 키를 앞에 얹은 사본을 만든다.
+ */
+export interface FieldAliases {
+  ts: readonly string[]
+  level: readonly string[]
+  msg: readonly string[]
+  caller: readonly string[]
+  /** 지문 계산에서 제거할 키. ts·caller 별칭에서 유도된다. */
+  volatile: ReadonlySet<string>
+}
+
+export const DEFAULT_ALIASES: FieldAliases = {
+  ts: TS_KEYS,
+  level: LEVEL_KEYS,
+  msg: MSG_KEYS,
+  caller: CALLER_KEYS,
+  volatile: VOLATILE_KEYS,
+}
+
+/**
+ * meta.parser 로 들어온 값을 검증한다. 수집기는 내용을 해석하지 않고 흘리므로
+ * 형태 보장이 없다 — 배열이 아니거나 문자열이 아닌 항목은 조용히 버린다
+ * (parseViewHint 와 같은 규약). 쓸 만한 키가 하나도 없으면 undefined.
+ */
+export function parseParserHint(raw: unknown): ParserHint | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const obj = raw as Record<string, unknown>
+
+  const hint: ParserHint = {}
+  for (const name of ['tsKeys', 'levelKeys', 'msgKeys', 'callerKeys'] as const) {
+    const value = obj[name]
+    if (!Array.isArray(value)) continue
+    const keys = value.filter((k): k is string => typeof k === 'string' && k.trim() !== '')
+    if (keys.length > 0) hint[name] = keys
+  }
+  return Object.keys(hint).length > 0 ? hint : undefined
+}
+
+/**
+ * 앱 힌트의 키를 전역 별칭 **앞에** 붙인 별칭 한 벌을 만든다 — pick 은 목록
+ * 순서대로 찾으므로 앱이 지정한 키가 먼저 잡힌다. 앱별 ts·caller 키는 매 줄
+ * 달라지는 값이므로 지문 제거 대상(volatile)에도 들어간다 — 안 넣으면 그 앱의
+ * 반복 접기가 조용히 안 먹는다.
+ */
+export function mergeAliases(hint: ParserHint | undefined): FieldAliases {
+  if (hint === undefined) return DEFAULT_ALIASES
+  const ts = [...(hint.tsKeys ?? []), ...TS_KEYS]
+  const caller = [...(hint.callerKeys ?? []), ...CALLER_KEYS]
+  return {
+    ts,
+    level: [...(hint.levelKeys ?? []), ...LEVEL_KEYS],
+    msg: [...(hint.msgKeys ?? []), ...MSG_KEYS],
+    caller,
+    volatile: new Set<string>([...ts, ...caller]),
+  }
+}
 
 /** 줄 안에서 타임스탬프처럼 보이는 부분을 찾는다 (JSON 이 아닌 줄용). */
 const TS_SNIFF =
@@ -203,8 +263,11 @@ export function pick(
  * 한 줄이 화면을 다 먹는다. 정작 필요한 건 파일명과 줄 번호다.
  * zap 의 "caller":"consumer/rabbitmq.go:300" 문자열도 같이 받는다.
  */
-export function callerOf(fields: Record<string, unknown>): string {
-  const [, raw] = pick(fields, CALLER_KEYS)
+export function callerOf(
+  fields: Record<string, unknown>,
+  keys: readonly string[] = CALLER_KEYS,
+): string {
+  const [, raw] = pick(fields, keys)
 
   if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>
@@ -258,16 +321,20 @@ export function parseEmbeddedJson(node: unknown, depth = 0): unknown {
 }
 
 /** 지문 계산 전에 매 줄 달라지는 키를 재귀적으로 제거한다. */
-export function stripVolatile(node: unknown, depth = 0): unknown {
+export function stripVolatile(
+  node: unknown,
+  volatile: ReadonlySet<string> = VOLATILE_KEYS,
+  depth = 0,
+): unknown {
   if (depth > MAX_NEST_DEPTH) return node
 
   if (Array.isArray(node)) {
-    return node.map((v) => stripVolatile(v, depth + 1))
+    return node.map((v) => stripVolatile(v, volatile, depth + 1))
   }
   if (node !== null && typeof node === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(node)) {
-      if (!VOLATILE_KEYS.has(k)) out[k] = stripVolatile(v, depth + 1)
+      if (!volatile.has(k)) out[k] = stripVolatile(v, volatile, depth + 1)
     }
     return out
   }

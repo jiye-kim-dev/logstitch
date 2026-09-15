@@ -27,6 +27,11 @@ type App struct {
 	// 파서의 일이고, 여기서 파싱하면 그 경계가 무너진다.
 	View json.RawMessage `json:"view,omitempty"`
 
+	// Parser 는 파서를 위한 필드 별칭 힌트다 (tsKeys, msgKeys 등 —
+	// 표준 키를 안 쓰는 앱을 코드 수정 없이 흡수한다). View 와 같은
+	// 통과 채널이다: 해석 없이 meta 이벤트에 그대로 실어 보낸다.
+	Parser json.RawMessage `json:"parser,omitempty"`
+
 	// Note 는 사람을 위한 메모다. 코드는 쓰지 않는다.
 	Note string `json:"note,omitempty"`
 }

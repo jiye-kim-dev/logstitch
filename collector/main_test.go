@@ -16,20 +16,22 @@ var testApps = &apps.Config{
 }
 
 type args struct {
-	app    string
-	env    string
-	rid    string
-	from   string
-	to     string
-	fields stringList
-	after  int
+	app        string
+	env        string
+	rid        string
+	from       string
+	to         string
+	fields     stringList
+	after      int
+	noRequired bool
 }
 
 func build(t *testing.T, a args) (request, error) {
 	t.Helper()
 	timeout := 90
 	return buildRequest(testApps, "apps.json", "inventory",
-		a.app, a.env, a.rid, a.from, a.to, a.fields, nil, a.after, timeout, 0, 0, false)
+		a.app, a.env, a.rid, a.from, a.to, a.fields, nil, a.after, timeout, 0, 0,
+		a.noRequired, false)
 }
 
 func criteriaOf(req request) []string {
@@ -157,6 +159,45 @@ func TestBuildRequestRequiresFields(t *testing.T) {
 		})
 		if err == nil {
 			t.Error("rid 없이 통과했다")
+		}
+	})
+}
+
+// TestNoRequired 는 --no-required 가 필수 필드 검사만 끄고, "조건 없는 수집
+// 금지" 와 "required 우선 정렬" 은 유지함을 고정한다.
+func TestNoRequired(t *testing.T) {
+	t.Run("필수 필드 없이 임의 필드로 검색할 수 있다", func(t *testing.T) {
+		req, err := build(t, args{
+			app: "forwarder", env: "prod", noRequired: true,
+			fields: stringList{"source.function=OnRtmpConnect"},
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		want := []string{"source.function=OnRtmpConnect"}
+		if got := criteriaOf(req); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("조건이 %v (기대 %v)", got, want)
+		}
+	})
+
+	t.Run("조건이 아예 없으면 여전히 거부", func(t *testing.T) {
+		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true})
+		if err == nil {
+			t.Fatal("--no-required 로 조건 없이 통과했다 — 로그 전체를 긁게 된다")
+		}
+	})
+
+	t.Run("준 required 는 여전히 앞에 정렬된다", func(t *testing.T) {
+		req, err := build(t, args{
+			app: "forwarder", env: "prod", noRequired: true,
+			fields: stringList{"fn=OnRtmpConnect", "stream_key=abc"},
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		want := []string{"stream_key=abc", "fn=OnRtmpConnect"}
+		if got := criteriaOf(req); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("조건 순서가 %v (기대 %v)", got, want)
 		}
 	})
 }

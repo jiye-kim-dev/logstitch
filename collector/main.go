@@ -75,8 +75,9 @@ type request struct {
 	// ("2026-09-04T02:19:24.5" 형태). 비어 있으면 그쪽 경계 없이 전체 검색.
 	TimeFrom string
 	TimeTo   string
-	// View 는 앱 설정의 표현 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
+	// View / Parser 는 앱 설정의 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
 	View       json.RawMessage
+	Parser     json.RawMessage
 	Areas      []string
 	After      int
 	TimeoutSec int
@@ -111,12 +112,14 @@ func run() error {
 			"이 UTC 시각부터의 로그만 (YYYY-MM-DD[THH:MM[:SS[.소수]]][Z]). 비우면 처음부터")
 		to = flag.String("to", "",
 			"이 UTC 시각까지의 로그만 — 준 정밀도 구간 끝까지 포함 (--to 2026-09-04 는 그날 전체). 비우면 끝까지")
-		after    = flag.Int("after", 0, "grep 컨텍스트 줄 수 (스택트레이스용). 필드가 하나일 때만")
-		timeout  = flag.Int("timeout", 90, "호스트당 타임아웃(초)")
-		workers  = flag.Int("workers", 0, "동시 실행 수. 0 이면 자동")
-		maxLines = flag.Int("max-lines", 50000, "호스트당 줄 수 상한. 0 이면 무제한")
-		dryRun   = flag.Bool("dry-run", false, "접속 없이 원격 명령만 출력")
-		serve    = flag.String("serve", "",
+		after      = flag.Int("after", 0, "grep 컨텍스트 줄 수 (스택트레이스용). 필드가 하나일 때만")
+		timeout    = flag.Int("timeout", 90, "호스트당 타임아웃(초)")
+		workers    = flag.Int("workers", 0, "동시 실행 수. 0 이면 자동")
+		maxLines   = flag.Int("max-lines", 50000, "호스트당 줄 수 상한. 0 이면 무제한")
+		dryRun     = flag.Bool("dry-run", false, "접속 없이 원격 명령만 출력")
+		noRequired = flag.Bool("no-required", false,
+			"앱의 필수 필드 검사를 건너뛴다 (함수명 등 임시 검색용). --field 는 최소 하나 필요")
+		serve = flag.String("serve", "",
 			"HTTP 서버로 실행 (예: :8080). POST /collect 가 CLI 와 같은 수집을 실행한다")
 	)
 	flag.Var(&fields, "field", "검색 조건 (반복 가능). 형식: key=value")
@@ -136,7 +139,7 @@ func run() error {
 	}
 
 	req, err := buildRequest(appCfg, *appsPath, *inventoryBase, *app, *env, *rid, *from, *to,
-		fields, areas, *after, *timeout, *workers, *maxLines, *dryRun)
+		fields, areas, *after, *timeout, *workers, *maxLines, *noRequired, *dryRun)
 	if err != nil {
 		return err
 	}
@@ -198,6 +201,7 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 		MaxLines:    req.MaxLines,
 		Areas:       areaOrder,
 		View:        req.View,
+		Parser:      req.Parser,
 		TimeFrom:    req.TimeFrom,
 		TimeTo:      req.TimeTo,
 	}, out)
@@ -209,7 +213,7 @@ func buildRequest(
 	appsPath, inventoryBase, app, env, rid, from, to string,
 	fields, areas stringList,
 	after, timeout, workers, maxLines int,
-	dryRun bool,
+	noRequired, dryRun bool,
 ) (request, error) {
 
 	if app == "" {
@@ -244,9 +248,18 @@ func buildRequest(
 		return request{}, err
 	}
 
-	criteria, err := orderCriteria(app, appDef, given)
+	criteria, err := orderCriteria(app, appDef, given, noRequired)
 	if err != nil {
 		return request{}, err
+	}
+	// apps.Load 가 required 를 비워두지 못하게 하므로 여기 걸리는 것은
+	// --no-required 로 검사를 끈 채 --field 를 하나도 안 준 경우뿐이다.
+	// 조건 없는 수집은 로그 전체를 긁어오므로 거부한다.
+	if len(criteria) == 0 {
+		return request{}, fmt.Errorf(
+			"검색 조건이 없습니다 — --no-required 여도 --field 를 최소 하나 줘야 합니다\n"+
+				"       예: logstitch --app %s --env %s --no-required --field source.function=<함수명>",
+			app, env)
 	}
 
 	if after < 0 {
@@ -288,6 +301,7 @@ func buildRequest(
 		TimeFrom:      timeFrom,
 		TimeTo:        timeTo,
 		View:          appDef.View,
+		Parser:        appDef.Parser,
 		Areas:         areas,
 		After:         after,
 		TimeoutSec:    timeout,
@@ -356,10 +370,14 @@ func parseFields(fields stringList) (map[string]string, error) {
 // required 순서를 앞에 두는 이유는 원격에서 grep 을 그 순서로 이어붙이기
 // 때문이다 — 선택적인 필드를 앞에 적어두면 뒤쪽 grep 이 훑을 양이 줄어든다.
 // required 밖의 필드는 추가 교집합 조건으로 뒤에 붙는다 (임시 조회용).
+//
+// noRequired 면 빠진 필수 필드를 오류로 만들지 않는다 (함수명처럼 세션 키
+// 없이 검색하는 임시 조회용). 준 필드의 순서 규칙은 그대로다.
 func orderCriteria(
 	app string,
 	def apps.App,
 	given map[string]string,
+	noRequired bool,
 ) ([]collect.Criterion, error) {
 
 	var missing []string
@@ -374,7 +392,7 @@ func orderCriteria(
 		criteria = append(criteria, collect.Criterion{Field: field, Value: value})
 	}
 
-	if len(missing) > 0 {
+	if len(missing) > 0 && !noRequired {
 		return nil, fmt.Errorf(
 			"앱 %q 의 필수 필드가 빠졌습니다: %s\n"+
 				"       필요한 필드 전체: %s\n"+

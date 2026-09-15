@@ -56,7 +56,15 @@ export LOGSTITCH_FIXTURES="$ROOT/test/fixtures"
 
 RAW="$(mktemp)"
 OUT="$(mktemp)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.err"' EXIT
+
+# 단일 진입점이 .runs 에 남긴 원본 디렉토리를 stderr 의 "[원본]" 줄에서 찾아 지운다.
+# (e2e 가 실제 .runs 를 테스트 잔여물로 오염시키지 않기 위해서)
+cleanup_run_dir() {
+  local dir
+  dir=$(sed -n 's/^\[원본\] \(.*\)\/raw\.ndjson$/\1/p' "$1" | head -1)
+  [ -n "$dir" ] && [ -d "$dir" ] && rm -rf "$dir"
+}
 
 $LS --app sample --env test --rid "$RID" --max-lines 0 > "$RAW" 2>/dev/null
 lines=$(grep -c '"type":"line"' "$RAW")
@@ -122,6 +130,12 @@ grep -q '"fields":\[{"field":"rid"' "$RAW.multi" \
   && ok "조건 순서가 앱 설정을 따름 (rid 먼저)" \
   || bad "meta 의 조건 순서가 required 순서가 아님"
 
+# apps.json 의 parser 힌트는 해석 없이 meta 로 통과되어야 한다
+# (별칭 병합 자체는 parser 단위 테스트가 고정한다)
+grep -q '"parser":{"tsKeys":\["ts"\]}' "$RAW.multi" \
+  && ok "parser 힌트가 meta 이벤트로 원문 그대로 통과됨" \
+  || bad "meta 에 parser 힌트가 없거나 변형됨"
+
 node parser/src/cli.ts --no-color < "$RAW" > "$OUT" 2>/dev/null
 grep -q '⟲ 같은 내용 4회 반복' "$OUT" \
   && ok "반복 폴링 줄 접기" \
@@ -146,6 +160,67 @@ grep -q 'rotated file hit' "$OUT" \
 grep -q '^~' "$OUT" \
   && ok "시각 없는 연속 줄이 직전 시각을 물려받음" \
   || bad "시각 물려받기가 동작하지 않음"
+
+# ── 단일 진입점 — 파서가 수집기를 spawn 해도 파이프 모드와 출력이 같아야 한다
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test --rid "$RID" --max-lines 0 \
+  --no-color > "$OUT.wrap" 2> "$OUT.err"
+diff -q "$OUT" "$OUT.wrap" >/dev/null \
+  && ok "단일 진입점 출력이 파이프 모드와 동일" \
+  || bad "단일 진입점 출력이 파이프 모드와 다름"
+
+# 수집 모드는 원본 NDJSON 을 .runs 에 무조건 남긴다
+run_dir=$(sed -n 's/^\[원본\] \(.*\)\/raw\.ndjson$/\1/p' "$OUT.err" | head -1)
+# grep -c 는 파일이 없으면 stdout 이 비므로(종료코드 2) 0 으로 보정한다
+saved_lines=$(grep -c '"type":"line"' "$run_dir/raw.ndjson" 2>/dev/null)
+saved_lines=${saved_lines:-0}
+if [ -n "$run_dir" ] && [ "$saved_lines" -eq 15 ] && [ -f "$run_dir/meta.json" ]; then
+  ok "원본 NDJSON 이 .runs 에 저장됨 (15줄 + meta.json)"
+else
+  bad "원본 NDJSON 저장 실패 (dir=${run_dir:-없음}, 줄=$saved_lines)"
+fi
+grep -q '"app":"sample"' "$run_dir/meta.json" 2>/dev/null \
+  && ok ".runs meta.json 에 실행 정보가 남음" \
+  || bad ".runs meta.json 내용이 비정상"
+cleanup_run_dir "$OUT.err"
+
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test --rid "$RID" --dry-run > "$OUT.dry" 2>/dev/null
+grep -q 'grep -F' "$OUT.dry" \
+  && ok "단일 진입점 dry-run 이 원격 스크립트를 그대로 흘림" \
+  || bad "단일 진입점 dry-run 이 동작하지 않음"
+
+# --apps/--inventory 없이 CWD(test/)에 apps.json 이 있으면 그걸 쓴다 —
+# 파이프 모드와 같은 규약. (CWD 에 없을 때의 저장소 루트 폴백은 루트
+# apps.json 존재에 의존하므로 여기서는 검증하지 않는다)
+(cd test && LOGSTITCH_COLLECTOR="$BIN" node ../parser/src/cli.ts \
+  --app sample --env test --rid "$RID" --max-lines 0 --no-color) > "$OUT.cwd" 2> "$OUT.err"
+diff -q "$OUT" "$OUT.cwd" >/dev/null \
+  && ok "수집 모드가 CWD 의 설정(apps.json)을 우선 사용" \
+  || bad "CWD 의 apps.json 이 무시됨"
+cleanup_run_dir "$OUT.err"
+
+# 수집기가 검증에서 죽으면 (exit 2) 파서도 같은 코드로 끝나야 한다
+wrap_code=0
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test >/dev/null 2>&1 || wrap_code=$?
+[ "$wrap_code" -eq 2 ] \
+  && ok "수집기 오류 종료코드(2)가 전파됨" \
+  || bad "수집기 오류가 전파되지 않음 (코드 $wrap_code)"
+
+# ── --no-required — 필수 필드 없이 임의 필드(함수명 등)로 검색 ──────────────
+nr=$($LS --app sample --env test --no-required --field 'fn=(*C).Handle' \
+  --max-lines 0 2>/dev/null | grep -c '"type":"line"')
+[ "$nr" -ge 1 ] \
+  && ok "--no-required 로 함수명 검색 (${nr}줄)" \
+  || bad "--no-required 함수명 검색이 0줄"
+
+$LS --app sample --env test --no-required >/dev/null 2>&1 \
+  && bad "--no-required 로 조건 없이 실행됐다" \
+  || ok "--no-required 여도 조건 없으면 거부"
 
 # ── 4. 파이썬 구현과 대조 (선택) ────────────────────────────────────────────
 if [ -n "${PYTHON_REF:-}" ]; then
