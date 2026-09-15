@@ -36,7 +36,7 @@ parser/                    TypeScript — 로그 내용을 안다
   src/fields.ts            필드 별칭, 타임스탬프 파싱, 임베디드 JSON 풀기
   src/records.ts           정규화, 매칭 판정, 지문, 반복 접기
   src/render.ts            터미널 / JSONL 출력, 요약
-  src/cli.ts               stdin NDJSON 소비, 필터·정렬
+  src/cli.ts               진입점 — 수집기 spawn(수집 모드) 또는 stdin NDJSON 소비
   src/index.ts             라이브러리 진입점 (2차 웹 계층이 import)
 
 test/                      가짜 ssh + 픽스처 + 파이썬 대조
@@ -206,6 +206,29 @@ logstitch --app forwarder --env prod \
 
 ```sh
 $LS --rid abc123 --field cpk=tenant-a | logstitch-parse
+```
+
+### 단일 진입점 (파이프 없이)
+
+파서에 수집 플래그(`--app` 등)를 주면 파서가 수집기를 직접 실행한다. 플래그는
+검증 없이 그대로 전달되고, ssh·인벤토리는 여전히 수집기 소유다. 바이너리는
+`$LOGSTITCH_COLLECTOR` → 저장소의 `.bin/logstitch` → PATH 순으로 찾는다.
+
+```sh
+logstitch-parse --app ai-stt --env prod --rid abc123 --strict
+```
+
+### 필수 필드 없이 검색 (`--no-required`)
+
+"이 함수가 언제 탔는가"처럼 세션 키 없이 검색할 때는 `--no-required` 로 필수
+필드 검사만 끈다. 검색 조건은 여전히 최소 하나 필요하다 (조건 없는 수집은
+로그 전체를 긁으므로 거부). 원격 grep 은 값만 보므로 필드 키는 자유고, 값이
+어디서 걸렸는지는 파서가 판정한다 — `source.function` 안의 함수명은 `partial`
+매칭이라 `--strict` 에서도 살아남는다.
+
+```sh
+$LS --no-required --field source.function=OnRtmpConnect \
+  --from 2026-09-15T00:00 --to 2026-09-15T01:00 | logstitch-parse
 ```
 
 처음 돌릴 땐 `--dry-run` 으로 원격 명령을 눈으로 확인하고 시작하는 걸 권한다.

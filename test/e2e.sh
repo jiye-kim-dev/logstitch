@@ -56,7 +56,7 @@ export LOGSTITCH_FIXTURES="$ROOT/test/fixtures"
 
 RAW="$(mktemp)"
 OUT="$(mktemp)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry"' EXIT
 
 $LS --app sample --env test --rid "$RID" --max-lines 0 > "$RAW" 2>/dev/null
 lines=$(grep -c '"type":"line"' "$RAW")
@@ -146,6 +146,42 @@ grep -q 'rotated file hit' "$OUT" \
 grep -q '^~' "$OUT" \
   && ok "시각 없는 연속 줄이 직전 시각을 물려받음" \
   || bad "시각 물려받기가 동작하지 않음"
+
+# ── 단일 진입점 — 파서가 수집기를 spawn 해도 파이프 모드와 출력이 같아야 한다
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test --rid "$RID" --max-lines 0 \
+  --no-color > "$OUT.wrap" 2>/dev/null
+diff -q "$OUT" "$OUT.wrap" >/dev/null \
+  && ok "단일 진입점 출력이 파이프 모드와 동일" \
+  || bad "단일 진입점 출력이 파이프 모드와 다름"
+
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test --rid "$RID" --dry-run > "$OUT.dry" 2>/dev/null
+grep -q 'grep -F' "$OUT.dry" \
+  && ok "단일 진입점 dry-run 이 원격 스크립트를 그대로 흘림" \
+  || bad "단일 진입점 dry-run 이 동작하지 않음"
+
+# 수집기가 검증에서 죽으면 (exit 2) 파서도 같은 코드로 끝나야 한다
+wrap_code=0
+LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
+  --apps "$APPS" --inventory "$INV_BASE" \
+  --app sample --env test >/dev/null 2>&1 || wrap_code=$?
+[ "$wrap_code" -eq 2 ] \
+  && ok "수집기 오류 종료코드(2)가 전파됨" \
+  || bad "수집기 오류가 전파되지 않음 (코드 $wrap_code)"
+
+# ── --no-required — 필수 필드 없이 임의 필드(함수명 등)로 검색 ──────────────
+nr=$($LS --app sample --env test --no-required --field 'fn=(*C).Handle' \
+  --max-lines 0 2>/dev/null | grep -c '"type":"line"')
+[ "$nr" -ge 1 ] \
+  && ok "--no-required 로 함수명 검색 (${nr}줄)" \
+  || bad "--no-required 함수명 검색이 0줄"
+
+$LS --app sample --env test --no-required >/dev/null 2>&1 \
+  && bad "--no-required 로 조건 없이 실행됐다" \
+  || ok "--no-required 여도 조건 없으면 거부"
 
 # ── 4. 파이썬 구현과 대조 (선택) ────────────────────────────────────────────
 if [ -n "${PYTHON_REF:-}" ]; then
