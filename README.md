@@ -260,6 +260,17 @@ logstitch-parse --app ai-stt --env prod --rid abc123 --strict
   같은 규약 — 설정을 다른 디렉토리에 두고 거기서 실행하면 그게 우선) →
   저장소 루트의 `apps.json` 과 `inventory.<앱>.<환경>.json`
 
+**수집 모드는 원본 NDJSON 을 항상 남긴다.** 파서가 수집기 출력을 삼키는 구조라
+따로 보존하지 않으면 원본이 사라지기 때문이다. 저장소 루트의
+`.runs/<시각>-<앱>-<주값>/` 아래 `raw.ndjson` 과 `meta.json`(무엇을 검색했는지)이
+생기고, 경로는 stderr 에 `[원본] …` 으로 찍힌다 (`--dry-run` 은 제외).
+`.runs/` 는 고객 키·IP 가 그대로 들어있어 gitignore 대상이다. 같은 검색을
+ssh 없이 다른 옵션으로 재파싱할 수 있다:
+
+```sh
+logstitch-parse --view flow --no-collapse < .runs/20260915-140454-ai-stt-abc123/raw.ndjson
+```
+
 ### HTTP 서버 (`--serve`)
 
 같은 수집을 HTTP 로도 실행한다 (2차 웹 백엔드용). 검증·실행 경로는 CLI 와

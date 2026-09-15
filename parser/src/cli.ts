@@ -15,7 +15,9 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import type { WriteStream } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -157,16 +159,22 @@ function parseCliArgs() {
   forward('--env', values.env)
   forward('--rid', values.rid)
   for (const spec of values.field) collect.push('--field', spec)
-  for (const name of values.area) collect.push('--area', name)
-  forward('--from', values.from)
-  forward('--to', values.to)
-  forward('--after', values.after)
-  forward('--timeout', values.timeout)
-  forward('--workers', values.workers)
-  forward('--max-lines', values['max-lines'])
+  // 검색 조건 밖의 수집 옵션은 따로 모은다 — .runs 의 meta.json 에도 남긴다.
+  const opts: string[] = []
+  const forwardOpt = (flag: string, value: string | undefined): void => {
+    if (value !== undefined) opts.push(flag, value)
+  }
+  for (const name of values.area) opts.push('--area', name)
+  forwardOpt('--from', values.from)
+  forwardOpt('--to', values.to)
+  forwardOpt('--after', values.after)
+  forwardOpt('--timeout', values.timeout)
+  forwardOpt('--workers', values.workers)
+  forwardOpt('--max-lines', values['max-lines'])
+  if (values['no-required']) opts.push('--no-required')
+  collect.push(...opts)
   forward('--apps', values.apps)
   forward('--inventory', values.inventory)
-  if (values['no-required']) collect.push('--no-required')
   if (values['dry-run']) collect.push('--dry-run')
 
   // ── 설정 파일 기본값 ────────────────────────────────────────────────────
@@ -184,6 +192,18 @@ function parseCliArgs() {
     }
   }
 
+  // ── 원본 보존용 실행 정보 (수집 모드, dry-run 제외) ─────────────────────
+  const fields: Record<string, string> = {}
+  if (values.rid !== undefined) fields['rid'] = values.rid
+  for (const spec of values.field) {
+    const cut = spec.indexOf('=')
+    if (cut > 0 && !(spec.slice(0, cut) in fields)) fields[spec.slice(0, cut)] = spec.slice(cut + 1)
+  }
+  const run: RunInfo | null =
+    collect.length > 0 && !values['dry-run']
+      ? { app: values.app ?? 'app', env: values.env ?? '', fields, opts }
+      : null
+
   return {
     strict: values.strict,
     where: clauses,
@@ -198,7 +218,47 @@ function parseCliArgs() {
     collect: collect.length > 0 ? collect : null,
     collectorBin: values.collector,
     dryRun: values['dry-run'],
+    run,
   }
+}
+
+/** .runs 에 남길 실행 정보. 기존 수집 스크립트의 meta.json 과 같은 모양이다. */
+interface RunInfo {
+  app: string
+  env: string
+  fields: Record<string, string>
+  opts: string[]
+}
+
+/**
+ * .runs/<로컬시각>-<앱>-<주값 8자>/ 를 만들고 meta.json 을 쓴다.
+ * 이름 규약은 기존 수집 스크립트가 만들던 것과 같다 (20260911-150417-forwarder-rjcgd0cu).
+ */
+// ponytail: .runs 는 항상 저장소 루트에 쓴다 — 다른 위치가 필요해지면 그때 플래그로
+function newRunDir(run: RunInfo): string {
+  const now = new Date()
+  const p = (n: number): string => String(n).padStart(2, '0')
+  const stamp =
+    `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
+    `-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
+  const clean = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, '_')
+  const slug = clean(Object.values(run.fields)[0] ?? '').slice(0, 8) || 'run'
+
+  const dir = fileURLToPath(
+    new URL(`../../.runs/${stamp}-${clean(run.app)}-${slug}`, import.meta.url),
+  )
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'meta.json'),
+    `${JSON.stringify({
+      app: run.app,
+      env: run.env,
+      fields: run.fields,
+      opts: run.opts,
+      collected_at: now.toISOString().replace(/\.\d+Z$/, 'Z'),
+    })}\n`,
+  )
+  return dir
 }
 
 /**
@@ -263,10 +323,28 @@ async function main(): Promise<number> {
   let timeFromNanos: bigint | null = null
   let timeToEndNanos: bigint | null = null // 배타적 상한
 
+  // ── 원본 보존 ─────────────────────────────────────────────────────────
+  // 수집기를 파서가 삼키는 구조라 여기서 남기지 않으면 원본 NDJSON 이
+  // 사라진다. 첫 이벤트가 오면 .runs/ 아래에 raw.ndjson 을 연다 (수집기가
+  // 검증에서 죽어 아무것도 안 오면 빈 디렉토리도 안 생긴다). 같은 검색을
+  // ssh 없이 재파싱할 수 있다: logstitch-parse [파서 옵션] < raw.ndjson
+  let rawSink: WriteStream | null = null
+  let rawPath = ''
+  const runInfo = opt.run
+
   const rl = createInterface({ input, crlfDelay: Infinity })
 
   for await (const line of rl) {
     if (line.trim() === '') continue
+
+    if (runInfo !== null) {
+      if (rawSink === null) {
+        const dir = newRunDir(runInfo)
+        rawPath = join(dir, 'raw.ndjson')
+        rawSink = createWriteStream(rawPath)
+      }
+      rawSink.write(`${line}\n`)
+    }
 
     let event: CollectorEvent
     try {
@@ -346,6 +424,16 @@ async function main(): Promise<number> {
         })
         break
     }
+  }
+
+  if (rawSink !== null) {
+    // main 이 끝나면 process.exit 로 죽는데, exit 는 스트림 버퍼를 기다리지
+    // 않는다. flush 완료를 기다려야 원본이 온전히 남는다.
+    const sink = rawSink
+    await new Promise<void>((resolve) => {
+      sink.end(() => resolve())
+    })
+    process.stderr.write(`[원본] ${rawPath}\n`)
   }
 
   if (malformed > 0) {
