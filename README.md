@@ -246,12 +246,19 @@ $LS --rid abc123 | logstitch-parse --view flow
 ### 단일 진입점 (파이프 없이)
 
 파서에 수집 플래그(`--app` 등)를 주면 파서가 수집기를 직접 실행한다. 플래그는
-검증 없이 그대로 전달되고, ssh·인벤토리는 여전히 수집기 소유다. 바이너리는
-`$LOGSTITCH_COLLECTOR` → 저장소의 `.bin/logstitch` → PATH 순으로 찾는다.
+검증 없이 그대로 전달되고, ssh·인벤토리는 여전히 수집기 소유다.
 
 ```sh
 logstitch-parse --app ai-stt --env prod --rid abc123 --strict
 ```
+
+전역 링크로 아무 데서나 실행해도 되도록 파서가 둘 다 찾아준다:
+
+- **수집기 바이너리**: `--collector` → `$LOGSTITCH_COLLECTOR` → 저장소의
+  `.bin/logstitch` → PATH 의 `logstitch`
+- **설정 파일**: `--apps`/`--inventory` → CWD 의 `apps.json` (파이프 모드와
+  같은 규약 — 설정을 다른 디렉토리에 두고 거기서 실행하면 그게 우선) →
+  저장소 루트의 `apps.json` 과 `inventory.<앱>.<환경>.json`
 
 ### HTTP 서버 (`--serve`)
 

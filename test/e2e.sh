@@ -56,7 +56,7 @@ export LOGSTITCH_FIXTURES="$ROOT/test/fixtures"
 
 RAW="$(mktemp)"
 OUT="$(mktemp)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd"' EXIT
 
 $LS --app sample --env test --rid "$RID" --max-lines 0 > "$RAW" 2>/dev/null
 lines=$(grep -c '"type":"line"' "$RAW")
@@ -168,6 +168,15 @@ LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
 grep -q 'grep -F' "$OUT.dry" \
   && ok "단일 진입점 dry-run 이 원격 스크립트를 그대로 흘림" \
   || bad "단일 진입점 dry-run 이 동작하지 않음"
+
+# --apps/--inventory 없이 CWD(test/)에 apps.json 이 있으면 그걸 쓴다 —
+# 파이프 모드와 같은 규약. (CWD 에 없을 때의 저장소 루트 폴백은 루트
+# apps.json 존재에 의존하므로 여기서는 검증하지 않는다)
+(cd test && LOGSTITCH_COLLECTOR="$BIN" node ../parser/src/cli.ts \
+  --app sample --env test --rid "$RID" --max-lines 0 --no-color) > "$OUT.cwd" 2>/dev/null
+diff -q "$OUT" "$OUT.cwd" >/dev/null \
+  && ok "수집 모드가 CWD 의 설정(apps.json)을 우선 사용" \
+  || bad "CWD 의 apps.json 이 무시됨"
 
 # 수집기가 검증에서 죽으면 (exit 2) 파서도 같은 코드로 끝나야 한다
 wrap_code=0

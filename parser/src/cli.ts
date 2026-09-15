@@ -169,6 +169,21 @@ function parseCliArgs() {
   if (values['no-required']) collect.push('--no-required')
   if (values['dry-run']) collect.push('--dry-run')
 
+  // ── 설정 파일 기본값 ────────────────────────────────────────────────────
+  // 수집기의 기본 경로(apps.json, inventory.<앱>.<환경>.json)는 CWD 상대라서,
+  // 전역 링크된 이 명령을 아무 데서나 실행하면 못 찾는다. CWD 에 apps.json 이
+  // 있으면 기존 파이프 모드처럼 수집기 기본값(CWD)에 맡기고, 없으면 수집기
+  // 바이너리를 찾을 때와 같은 원리로 저장소 루트의 설정을 명시해서 넘긴다.
+  if (collect.length > 0 && values.apps === undefined && !existsSync('apps.json')) {
+    const rootApps = fileURLToPath(new URL('../../apps.json', import.meta.url))
+    if (existsSync(rootApps)) {
+      collect.push('--apps', rootApps)
+      if (values.inventory === undefined) {
+        collect.push('--inventory', fileURLToPath(new URL('../../inventory', import.meta.url)))
+      }
+    }
+  }
+
   return {
     strict: values.strict,
     where: clauses,
