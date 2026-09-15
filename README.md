@@ -17,7 +17,7 @@ logstitch --app ai-stt --env prod --rid abc123 | logstitch-parse
 - **자격증명을 다루지 않는다** — 시스템 `ssh` 를 그대로 exec 하므로 `~/.ssh/config`,
   ssh-agent, ProxyJump, known_hosts 를 OS 가 처리한다. IP 도 패스워드도 코드에 없다.
 - **의존성이 거의 없다** — 수집기는 Go 표준 라이브러리만, 파서는 Node 22 의 내장
-  타입 스트리핑으로 빌드 단계 없이 돈다 (개발 시 `typescript` 만 필요).
+  타입 스트리핑으로 빌드 단계 없이 돈다 (개발 시 `typescript`·`@types/node` 만 필요).
 
 ## 구성
 
@@ -26,16 +26,22 @@ apps.json                  앱별 필수 필드 (환경 무관, 커밋함)
 inventory.<앱>.<환경>.json    호스트와 로그 경로 (환경별, 커밋 안 함)
 
 collector/                 Go — 로그 내용을 모른다
-  main.go                  CLI, 인자 검증, 타깃 전개, 종료코드
+  main.go                  CLI 진입점 — 인자 검증, 타깃 전개, 종료코드
+  server.go                HTTP 진입점 (--serve, POST /collect)
   apps/                    앱 설정 로딩·검증
   inventory/               인벤토리 경로 해석, 로딩·검증
   remote/                  원격 bash 스크립트 생성, 셸 인용
   collect/                 ssh 팬아웃, NDJSON 스트리밍
 
 parser/                    TypeScript — 로그 내용을 안다
-  src/fields.ts            필드 별칭, 타임스탬프 파싱, 임베디드 JSON 풀기
+  src/types.ts             수집기·파서 사이의 NDJSON 계약, 레코드 타입
+  src/fields.ts            필드 별칭(+ apps.json parser 힌트 병합), 타임스탬프 파싱
   src/records.ts           정규화, 매칭 판정, 지문, 반복 접기
-  src/render.ts            터미널 / JSONL 출력, 요약
+  src/profiles.ts          앱 프로필 — 뷰 선택, 앱 의미론(classify) 연결
+  src/forwarder.ts         forwarder 앱 의미론 (FSM 분류, 레인 해석)
+  src/render.ts            터미널 / JSONL 출력, 요약 (timeline 뷰)
+  src/view-flow.ts         flow 뷰 — 영역별 블록 + 핸드오프 갭
+  src/view-contention.ts   contention 뷰 — 노드 레인 + Δ 간격
   src/cli.ts               진입점 — 수집기 spawn(수집 모드) 또는 stdin NDJSON 소비
   src/index.ts             라이브러리 진입점 (2차 웹 계층이 import)
 
@@ -44,7 +50,9 @@ test/                      가짜 ssh + 픽스처 + 파이썬 대조
 
 `main.go` 는 CLI 관심사(인자 파싱, 검증, 종료코드)만 두고 전송 계층은 별도
 패키지(`apps`, `inventory`, `remote`, `collect`)에 둔다. 그 경계는 컴파일러가 강제한다.
-2차에서 stdin JSON 진입점을 붙일 때도 `main.go` 만 건드리면 된다.
+실제로 HTTP 진입점(`server.go`)을 붙일 때 그 경계가 그대로 통했다 — 두 진입점은
+`buildRequest` 검증과 `execute` 실행을 공유하고, JSON 본문을 CLI 플래그 형태로
+옮기기만 한다.
 
 경계선이 정확히 어디인지가 이 저장소를 읽는 열쇠다.
 
@@ -158,6 +166,7 @@ Host req-* sch-* rcv-*
 ```sh
 # 수집기. -o 는 -C 로 이동한 디렉토리 기준이라 ../ 가 필요하다.
 # (collector 는 자기 go.mod 를 가진 별도 모듈이라 루트에서 ./collector 로는 못 짓는다)
+mkdir -p .bin   # .gitignore 대상이라 clone 직후에는 없다
 go build -C collector -o ../.bin/logstitch .
 
 # 파서는 빌드 단계가 없다. Node 22.18+ 의 타입 스트리핑으로 .ts 를 바로 실행한다.
@@ -171,8 +180,8 @@ ln -s "$PWD/parser/src/cli.ts" .bin/logstitch-parse
 export PATH="$PWD/.bin:$PATH"
 ```
 
-`.bin/` 은 `.gitignore` 대상이라 새로 clone 하면 비어 있다. `./test/e2e.sh` 도
-첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도 `.bin/logstitch` 가 생긴다.
+`./test/e2e.sh` 도 첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도
+`.bin/logstitch` 가 생긴다.
 
 ## 사용
 
@@ -185,12 +194,13 @@ $LS --rid abc123 | logstitch-parse                  # 기본
 $LS --rid abc123 --dry-run                          # 접속 없이 원격 명령만 확인
 $LS --rid abc123 --area scheduler | logstitch-parse  # 특정 영역만
 $LS --rid abc123 --after 20 | logstitch-parse        # 스택트레이스 뒤 20줄까지
-$LS --field content_id=555 | logstitch-parse         # 임의 필드로 검색
+$LS --no-required --field content_id=555 | logstitch-parse
+                                                     # 임의 필드로만 검색 (필수 필드 검사 끔)
 
 $LS --rid abc123 --from 2026-09-04T02:19 --to 2026-09-04T02:20 | logstitch-parse
                                                      # UTC 시각 범위만 (한쪽만 줘도 됨)
 
-$LS --rid abc123 | logstitch-parse --strict          # 필드 정확일치만
+$LS --rid abc123 | logstitch-parse --strict          # 다른 요청 의심 줄(other/substring) 제외
 $LS --rid abc123 | logstitch-parse --value-cap 0     # 긴 값(ffmpeg 명령줄 등) 통째로
 $LS --rid abc123 | logstitch-parse --json > t.jsonl  # 나중에 시각화용
 ```
@@ -208,6 +218,28 @@ logstitch --app forwarder --env prod \
 $LS --rid abc123 --field cpk=tenant-a | logstitch-parse
 ```
 
+### 뷰 고르기 (`--view`)
+
+출력 뷰는 로그의 관계 패턴에 따라 셋이다. 기본값은 `apps.json` 의 `view` 힌트를
+따르고, `--view` 플래그가 힌트보다 우선한다.
+
+- `timeline` — 전 영역 병합 타임라인 (힌트 없는 앱의 기본)
+- `flow` — 하나의 요청이 여러 영역을 순차 통과할 때. 영역별 블록 + 핸드오프 갭
+- `contention` — 여러 노드가 같은 자원을 두고 경쟁할 때. 노드 레인 + Δ 간격
+
+```json
+"forwarder": {
+  "view": { "default": "contention", "lane": "server_id", "session": "trace_id" }
+}
+```
+
+`lane` 은 레인을 나눌 필드, `session` 은 세션 구분 필드다. 힌트만으로 표현이 안
+되는 앱 의미론(FSM 분류 등)은 파서의 프로필 코드(`parser/src/profiles.ts`)에 둔다.
+
+```sh
+$LS --rid abc123 | logstitch-parse --view flow
+```
+
 ### 단일 진입점 (파이프 없이)
 
 파서에 수집 플래그(`--app` 등)를 주면 파서가 수집기를 직접 실행한다. 플래그는
@@ -216,6 +248,17 @@ $LS --rid abc123 --field cpk=tenant-a | logstitch-parse
 
 ```sh
 logstitch-parse --app ai-stt --env prod --rid abc123 --strict
+```
+
+### HTTP 서버 (`--serve`)
+
+같은 수집을 HTTP 로도 실행한다 (2차 웹 백엔드용). 검증·실행 경로는 CLI 와
+공유하고, 요청 본문으로 호스트를 넘기는 방법은 없다 — 접속 대상이 인벤토리에만
+있다는 원칙 그대로다.
+
+```sh
+logstitch --serve :8080
+curl -s localhost:8080/collect -d '{"app":"ai-stt","env":"prod","fields":{"rid":"abc123"}}'
 ```
 
 ### 필수 필드 없이 검색 (`--no-required`)
@@ -294,9 +337,11 @@ epoch 숫자 타임스탬프, UTC 아닌 오프셋)은 원격에서 버리지 �
 | `substring` | 값이 든 위치를 특정 못 함 | 제외 |
 | `raw` | JSON 이 아닌 줄 (panic 등) | 남음 |
 
-**`--strict` 를 기본으로 쓰지 말 것.** receiver 모듈은 `rid` 필드에 핸들러 이름
-(`"HandleSubtitle"`)을 넣고 진짜 rid 는 `form_data` 안에 넣는데, 그게 요청을 처음 받은
-시점의 원본 파라미터 로그다. 정확일치만 남기면 그 줄이 통째로 사라진다.
+**`--strict` 를 기본으로 쓰지 말 것.** 제외되는 `other`(예: `parent_rid` 에 같은 값)가
+부모·자식 요청을 잇는 연결 고리일 때가 있다. 한편 receiver 모듈처럼 `rid` 필드에
+핸들러 이름(`"HandleSubtitle"`)을 넣고 진짜 rid 를 `form_data` 안에 `"<rid>.mp3"` 로
+넣는 줄은 `partial` 로 분류되어 `--strict` 에서도 남는다 — 매칭 판정이 최상위
+필드만 보지 않고 중첩 구조까지 훑는 이유가 그 줄이다.
 
 ### 반복되는 줄 접기
 
@@ -310,8 +355,8 @@ epoch 숫자 타임스탬프, UTC 아닌 오프셋)은 원격에서 버리지 �
 한 줄만 남기는 게 아니라 **횟수와 지속 시간**을 같이 남긴다. 폴링에서는 그 지속
 시간 자체가 진단 정보다 ("STARTED 로 17분 묶여 있었다").
 
-판정 기준은 **시각을 뺀 레코드 전체의 지문**이다. `msg` 만 보고 접으면 상태
-전이(`STARTED` → `SUCCESS`)까지 뭉개지는데, 그게 정작 제일 보고 싶은 줄이다.
+판정 기준은 **시각·호출 위치를 뺀 레코드 전체의 지문**이다. `msg` 만 보고 접으면
+상태 전이(`STARTED` → `SUCCESS`)까지 뭉개지는데, 그게 정작 제일 보고 싶은 줄이다.
 접기는 같은 (영역·소스·호스트) 안에서 **연달아** 나온 줄에만 적용된다.
 
 `--no-collapse` 로 전부 볼 수 있다.
@@ -355,7 +400,8 @@ export const CALLER_KEYS = ['source', 'caller', ...]
 짧게 찍는다. function 경로는 너무 길어서 버린다.
 
 타임스탬프는 ISO8601(`Z`/오프셋/공백 구분), epoch 초·밀리·마이크로·나노를 자동
-판별한다. `⚠ 타임스탬프를 못 읽은 줄` 경고가 뜨면 `TS_KEYS` 에 키를 추가한다.
+판별한다. `⚠ 타임스탬프를 못 읽은 줄` 경고가 뜨면 키를 추가한다 — 여러 앱에
+흔한 키면 `TS_KEYS`, 특정 앱 전용이면 그 앱의 `parser` 힌트 `tsKeys`.
 
 ## 보안상 지켜둔 것
 
@@ -422,7 +468,8 @@ go test -C collector ./...
 2차에 붙일 것:
 
 - `web/` — Hono + React. `parser/src/index.ts` 를 그대로 import 한다.
-- 수집기를 `spawn` 하고 **stdin 으로 JSON 요청**을 넘기는 진입점.
-  플래그를 `request` 구조체로 한 번 모아둔 이유가 이것이다 (`cmd/logstitch/main.go`).
+  수집기 쪽 진입점은 이미 있다 — HTTP(`--serve`, POST `/collect`) 또는 파서의
+  수집 모드(spawn) 중 골라 쓰면 된다. 플래그를 `request` 구조체로 한 번
+  모아둔 것이 여기서 갚아졌다 (`collector/main.go`, `server.go`).
 - TTL 캐시. DB 없이 시작하는 대가는 "화면 열 때마다 프로덕션에 ssh" 다.
   추이(시계열)가 필요해지면 그때 SQLite 파일 하나로 올린다.
