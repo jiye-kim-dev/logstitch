@@ -14,7 +14,8 @@
     },
     "multi": {
       "required": ["rid", "state"],
-      "note": "scheduler 픽스처에 rid 와 state 가 같이 찍힌다"
+      "parser": { "tsKeys": ["ts"] },
+      "note": "scheduler 픽스처에 rid 와 state 가 같이 찍힌다. parser 힌트는 meta 통과 검증용 (ts 는 전역 별칭이라 동작은 안 바뀐다)"
     }
   }
 }

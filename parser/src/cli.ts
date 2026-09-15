@@ -20,7 +20,13 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { FAR_FUTURE_NANOS, parseTs, rangeEndNanos } from './fields.ts'
+import {
+  FAR_FUTURE_NANOS,
+  mergeAliases,
+  parseParserHint,
+  parseTs,
+  rangeEndNanos,
+} from './fields.ts'
 import {
   PROFILES,
   VIEW_NAMES,
@@ -272,7 +278,7 @@ async function main(): Promise<number> {
           timeToEndNanos = rangeEndNanos(timeTo)
           if (timeToEndNanos === null) fail(`meta 의 timeTo 를 해석할 수 없습니다: ${timeTo}`)
         }
-        // 수집기는 view 힌트를 해석하지 않고 흘리므로 형태 보장이 없다.
+        // 수집기는 view/parser 힌트를 해석하지 않고 흘리므로 형태 보장이 없다.
         viewHint = parseViewHint(event.view)
         // 주 식별자만 매칭 종류 판정에 쓴다. 나머지 조건은 수집기가 원격에서
         // 교집합으로 이미 걸러냈으므로 여기서 다시 볼 필요가 없다.
@@ -283,6 +289,8 @@ async function main(): Promise<number> {
           field: primary.field,
           value: primary.value,
           embed: opt.embed,
+          // 앱별 필드 별칭(apps.json 의 parser 힌트)을 전역 별칭 앞에 얹는다.
+          aliases: mergeAliases(parseParserHint(event.parser)),
         })
         // 수집기가 인벤토리 순서를 알려주면 그걸 쓴다. 없으면 아래에서
         // 도착 순서로 채워지는데, 그건 실행마다 달라질 수 있다.

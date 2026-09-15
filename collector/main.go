@@ -75,8 +75,9 @@ type request struct {
 	// ("2026-09-04T02:19:24.5" 형태). 비어 있으면 그쪽 경계 없이 전체 검색.
 	TimeFrom string
 	TimeTo   string
-	// View 는 앱 설정의 표현 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
+	// View / Parser 는 앱 설정의 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
 	View       json.RawMessage
+	Parser     json.RawMessage
 	Areas      []string
 	After      int
 	TimeoutSec int
@@ -200,6 +201,7 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 		MaxLines:    req.MaxLines,
 		Areas:       areaOrder,
 		View:        req.View,
+		Parser:      req.Parser,
 		TimeFrom:    req.TimeFrom,
 		TimeTo:      req.TimeTo,
 	}, out)
@@ -299,6 +301,7 @@ func buildRequest(
 		TimeFrom:      timeFrom,
 		TimeTo:        timeTo,
 		View:          appDef.View,
+		Parser:        appDef.Parser,
 		Areas:         areas,
 		After:         after,
 		TimeoutSec:    timeout,

@@ -122,6 +122,12 @@ grep -q '"fields":\[{"field":"rid"' "$RAW.multi" \
   && ok "조건 순서가 앱 설정을 따름 (rid 먼저)" \
   || bad "meta 의 조건 순서가 required 순서가 아님"
 
+# apps.json 의 parser 힌트는 해석 없이 meta 로 통과되어야 한다
+# (별칭 병합 자체는 parser 단위 테스트가 고정한다)
+grep -q '"parser":{"tsKeys":\["ts"\]}' "$RAW.multi" \
+  && ok "parser 힌트가 meta 이벤트로 원문 그대로 통과됨" \
+  || bad "meta 에 parser 힌트가 없거나 변형됨"
+
 node parser/src/cli.ts --no-color < "$RAW" > "$OUT" 2>/dev/null
 grep -q '⟲ 같은 내용 4회 반복' "$OUT" \
   && ok "반복 폴링 줄 접기" \

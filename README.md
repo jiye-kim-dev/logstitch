@@ -318,8 +318,9 @@ epoch 숫자 타임스탬프, UTC 아닌 오프셋)은 원격에서 버리지 �
 
 ## 실제 환경에 맞추기
 
-로그 필드 이름이 다르면 `parser/src/fields.ts` 상단의 별칭 목록만 고치면 된다.
-모듈별 파서를 만들 필요 없다.
+로그 필드 이름이 다르면 두 단계로 흡수한다. 모듈별 파서를 만들 필요 없다.
+
+**여러 앱에 흔한 키**는 `parser/src/fields.ts` 상단의 전역 별칭 목록에 추가한다.
 
 ```ts
 export const TS_KEYS    = ['ts', 'time', 'timestamp', '@timestamp', ...]
@@ -327,6 +328,26 @@ export const LEVEL_KEYS = ['level', 'lvl', 'severity', ...]
 export const MSG_KEYS   = ['msg', 'message', 'log', 'event', ...]
 export const CALLER_KEYS = ['source', 'caller', ...]
 ```
+
+**특정 앱에만 있는 키**는 코드 수정 없이 `apps.json` 의 `parser` 힌트로 얹는다.
+수집기는 `view` 와 똑같이 해석 없이 meta 이벤트로 통과시키고, 파서가 앱 키를
+전역 별칭 **앞에** 붙여 우선 적용한다 (`fields.ts` 의 `mergeAliases`).
+
+```json
+"my-app": {
+  "required": ["req_id"],
+  "parser": {
+    "tsKeys":     ["event_time"],
+    "levelKeys":  ["sev"],
+    "msgKeys":    ["description"],
+    "callerKeys": ["origin"]
+  }
+}
+```
+
+경계선은 view 힌트와 같다 — **조회(lookup)로 표현되는 선언만 JSON 에** 두고,
+계산이 필요한 앱 의미론(forwarder 의 FSM 분류 등)은 파서의 프로필 코드
+(`profiles.ts`)에 둔다. JSON 으로 로직을 표현하기 시작하면 설정 파일이 DSL 이 된다.
 
 `CALLER_KEYS` 는 호출 위치다. Go slog 의
 `"source":{"function":..,"file":..,"line":..}` 객체와 zap 의

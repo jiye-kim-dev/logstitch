@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { FAR_FUTURE_NANOS } from '../src/fields.ts'
+import { FAR_FUTURE_NANOS, mergeAliases } from '../src/fields.ts'
 import { Normalizer, classifyMatch, collapseRuns } from '../src/records.ts'
 import type { LineEvent, LogRecord } from '../src/types.ts'
 
@@ -224,5 +224,59 @@ describe('collapseRuns', () => {
       n.push(lineEvent(body, { host: 'kw42' })),
     ])
     assert.equal(kept.length, 2)
+  })
+})
+
+describe('앱별 필드 별칭 (apps.json parser 힌트)', () => {
+  const hinted = () =>
+    new Normalizer({
+      app: 'custom',
+      environment: 'test',
+      field: 'rid',
+      value: RID,
+      aliases: mergeAliases({
+        tsKeys: ['event_time'],
+        levelKeys: ['sev'],
+        msgKeys: ['description'],
+        callerKeys: ['origin'],
+      }),
+    })
+
+  const line = `{"event_time":"2026-09-04T02:19:24Z","sev":"warn","description":"hi","origin":"pkg/x.go:12","rid":"${RID}"}`
+
+  it('힌트의 키로 ts/level/msg/caller 를 뽑는다', () => {
+    const r = hinted().push(lineEvent(line))
+    assert.equal(r.tsKey, 'event_time')
+    assert.equal(r.level, 'WARN')
+    assert.equal(r.msg, 'hi')
+    assert.equal(r.caller, 'x.go:12')
+  })
+
+  it('힌트가 없으면 같은 줄에서 msg 를 못 찾는다 (대조군)', () => {
+    const n = new Normalizer({ app: 'custom', environment: 'test', field: 'rid', value: RID })
+    const r = n.push(lineEvent(line))
+    assert.equal(r.tsKey, null) // 시각은 sniff 로 건지지만 키는 못 찾는다
+    assert.equal(r.msg, '')
+  })
+
+  it('힌트의 ts 키는 지문에서 빠져서 반복 접기가 동작한다', () => {
+    const n = hinted()
+    const at = (ts: string) =>
+      `{"event_time":"${ts}","description":"poll","rid":"${RID}"}`
+    const kept = collapseRuns([
+      n.push(lineEvent(at('2026-09-04T02:19:26Z'))),
+      n.push(lineEvent(at('2026-09-04T02:19:27Z'))),
+    ])
+    assert.equal(kept.length, 1)
+    assert.equal(kept[0]!.repeat, 2)
+  })
+
+  it('앱 키가 전역 별칭보다 먼저 잡힌다', () => {
+    const r = hinted().push(
+      lineEvent(
+        `{"event_time":"2026-09-04T02:19:24Z","time":"2026-09-04T09:00:00Z","rid":"${RID}"}`,
+      ),
+    )
+    assert.equal(r.tsKey, 'event_time')
   })
 })

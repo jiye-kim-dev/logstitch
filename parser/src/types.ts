@@ -46,6 +46,25 @@ export interface ViewHint {
   laneFallback?: string
 }
 
+/**
+ * 앱 설정(apps.json)의 필드 별칭 힌트. view 와 같은 통과 채널을 쓴다.
+ *
+ * 표준 키(fields.ts 의 TS_KEYS 등)를 안 쓰는 앱을 코드 수정 없이 흡수한다.
+ * 앱이 지정한 키가 전역 별칭보다 먼저 잡힌다 (fields.ts 의 mergeAliases).
+ * ViewHint 와 같은 원칙으로 선언적인 값만 담는다 — 조회(lookup)로 표현되는
+ * 것은 여기, 계산이 필요한 앱 의미론은 프로필 코드(profiles.ts)에 둔다.
+ */
+export interface ParserHint {
+  /** 타임스탬프 키 별칭 (예: ["event_time"]) */
+  tsKeys?: string[]
+  /** 레벨 키 별칭 (예: ["sev"]) */
+  levelKeys?: string[]
+  /** 메시지 키 별칭 (예: ["description"]) */
+  msgKeys?: string[]
+  /** 호출 위치 키 별칭 (예: ["origin"]) */
+  callerKeys?: string[]
+}
+
 export interface MetaEvent {
   type: 'meta'
   /**
@@ -79,6 +98,8 @@ export interface MetaEvent {
   areas?: string[]
   /** 앱 설정의 표현 힌트. 수집기가 apps.json 에서 그대로 실어 보낸다. */
   view?: ViewHint
+  /** 앱 설정의 필드 별칭 힌트. 수집기가 apps.json 에서 그대로 실어 보낸다. */
+  parser?: ParserHint
 }
 
 export interface LineEvent {

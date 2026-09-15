@@ -8,6 +8,7 @@
 
 export {
   CALLER_KEYS,
+  DEFAULT_ALIASES,
   EMBED_MAX_DEPTH,
   FAR_FUTURE_NANOS,
   LEVEL_KEYS,
@@ -16,12 +17,15 @@ export {
   TS_KEYS,
   VOLATILE_KEYS,
   callerOf,
+  mergeAliases,
   parseEmbeddedJson,
+  parseParserHint,
   parseTs,
   pick,
   sniffTs,
   stripVolatile,
 } from './fields.ts'
+export type { FieldAliases } from './fields.ts'
 
 export { Normalizer, classifyMatch, collapseRuns, findValuePaths } from './records.ts'
 export type { NormalizerOptions } from './records.ts'
@@ -85,6 +89,7 @@ export type {
   LogRecord,
   MatchKind,
   MetaEvent,
+  ParserHint,
   Ts,
   ViewHint,
 } from './types.ts'

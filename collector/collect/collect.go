@@ -70,6 +70,7 @@ type MetaEvent struct {
 	Targets   int             `json:"targets"`
 	Areas     []string        `json:"areas"`
 	View      json.RawMessage `json:"view,omitempty"`
+	Parser    json.RawMessage `json:"parser,omitempty"`
 }
 
 // LineEvent 는 원격에서 grep 에 걸린 로그 한 줄이다.
@@ -107,6 +108,7 @@ type Options struct {
 	MaxLines    int             // 호스트당 상한. 0 이면 무제한.
 	Areas       []string        // 인벤토리 정의 순서. meta 이벤트로 파서에 넘긴다.
 	View        json.RawMessage // 앱 설정의 표현 힌트. 해석 없이 meta 로 전달.
+	Parser      json.RawMessage // 앱 설정의 필드 별칭 힌트. 해석 없이 meta 로 전달.
 	TimeFrom    string          // 정규화된 UTC 시각 하한. 비면 없음. 원격 프리필터 + meta 전달.
 	TimeTo      string          // 정규화된 UTC 시각 상한 (준 정밀도 구간 끝까지 포함). 비면 없음.
 }
@@ -171,6 +173,7 @@ func Run(
 		Targets:     len(targets),
 		Areas:       opt.Areas,
 		View:        opt.View,
+		Parser:      opt.Parser,
 	}
 
 	workers := opt.Workers
