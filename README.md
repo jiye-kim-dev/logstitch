@@ -178,10 +178,10 @@ go build -C collector -o ../.bin/logstitch .
 (cd parser && npm link)
 ```
 
-`npm link` 뒤에는 어디서든 `logstitch-parse` 로 부를 수 있다. 수집기 바이너리는
-파서가 저장소의 `.bin/logstitch` 를 스스로 찾으므로(단일 진입점 절 참고), 단일
-진입점만 쓴다면 이걸로 끝이다. 파이프 모드로 수집기를 직접 부르고 싶을 때만
-`export PATH="$PWD/.bin:$PATH"` 를 추가한다. 링크 해제는 `npm rm -g logstitch-parser`.
+`npm link` 뒤에는 어디서든 `logstitch-parse` 로 부를 수 있다. 수집기는 파서가
+PATH 의 `logstitch` 로 찾으므로(단일 진입점 절 참고) 셸 초기화 파일에
+`export PATH="<저장소>/.bin:$PATH"` 를 추가하거나, `LOGSTITCH_COLLECTOR` 에
+바이너리 경로를 지정한다. 링크 해제는 `npm rm -g logstitch-parser`.
 
 `./test/e2e.sh` 도 첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도
 `.bin/logstitch` 가 생긴다.
@@ -252,23 +252,25 @@ $LS --rid abc123 | logstitch-parse --view flow
 logstitch-parse --app ai-stt --env prod --rid abc123 --strict
 ```
 
-전역 링크로 아무 데서나 실행해도 되도록 파서가 둘 다 찾아준다:
+아무 디렉토리에서나 실행해도 되도록 탐색 규칙이 있다:
 
-- **수집기 바이너리**: `--collector` → `$LOGSTITCH_COLLECTOR` → 저장소의
-  `.bin/logstitch` → PATH 의 `logstitch`
-- **설정 파일**: `--apps`/`--inventory` → CWD 의 `apps.json` (파이프 모드와
-  같은 규약 — 설정을 다른 디렉토리에 두고 거기서 실행하면 그게 우선) →
-  저장소 루트의 `apps.json` 과 `inventory.<앱>.<환경>.json`
+- **수집기 바이너리**: `--collector` → `$LOGSTITCH_COLLECTOR` → PATH 의
+  `logstitch`
+- **설정 파일** (수집기가 스스로 찾는다 — 파이프 모드도 같은 규약):
+  `--apps`/`--inventory` → CWD 의 `apps.json` 과
+  `inventory.<앱>.<환경>.json` (설정을 다른 디렉토리에 두고 거기서 실행하면
+  그게 우선) → `~/.config/logstitch/` (또는 `$XDG_CONFIG_HOME/logstitch/`)
 
 **수집 모드는 원본 NDJSON 을 항상 남긴다.** 파서가 수집기 출력을 삼키는 구조라
-따로 보존하지 않으면 원본이 사라지기 때문이다. 저장소 루트의
-`.runs/<시각>-<앱>-<주값>/` 아래 `raw.ndjson` 과 `meta.json`(무엇을 검색했는지)이
+따로 보존하지 않으면 원본이 사라지기 때문이다.
+`~/.local/state/logstitch/runs/` (또는 `$XDG_STATE_HOME/logstitch/runs/`) 의
+`<시각>-<앱>-<주값>/` 아래 `raw.ndjson` 과 `meta.json`(무엇을 검색했는지)이
 생기고, 경로는 stderr 에 `[원본] …` 으로 찍힌다 (`--dry-run` 은 제외).
-`.runs/` 는 고객 키·IP 가 그대로 들어있어 gitignore 대상이다. 같은 검색을
-ssh 없이 다른 옵션으로 재파싱할 수 있다:
+run 디렉토리에는 고객 키·IP 가 그대로 들어있다 — 저장소가 아니라 홈 아래에
+두는 이유다. 같은 검색을 ssh 없이 다른 옵션으로 재파싱할 수 있다:
 
 ```sh
-logstitch-parse --view flow --no-collapse < .runs/20260915-140454-ai-stt-abc123/raw.ndjson
+logstitch-parse --view flow --no-collapse < ~/.local/state/logstitch/runs/20260915-140454-ai-stt-abc123/raw.ndjson
 ```
 
 ### HTTP 서버 (`--serve`)

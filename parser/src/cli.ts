@@ -15,11 +15,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs'
 import type { WriteStream } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import {
@@ -103,7 +103,7 @@ function parseCliArgs() {
         '  --app --env --rid --field --area --from --to --after --timeout',
         '  --workers --max-lines --no-required --dry-run --apps --inventory',
         '  --collector <경로>  수집기 바이너리. 기본: $LOGSTITCH_COLLECTOR →',
-        '                     저장소의 .bin/logstitch → PATH 의 logstitch',
+        '                     PATH 의 logstitch',
         '',
         '파서 옵션:',
         '  --strict           다른 요청으로 보이는 줄(other)과 위치를 특정하지',
@@ -159,7 +159,7 @@ function parseCliArgs() {
   forward('--env', values.env)
   forward('--rid', values.rid)
   for (const spec of values.field) collect.push('--field', spec)
-  // 검색 조건 밖의 수집 옵션은 따로 모은다 — .runs 의 meta.json 에도 남긴다.
+  // 검색 조건 밖의 수집 옵션은 따로 모은다 — run 디렉토리의 meta.json 에도 남긴다.
   const opts: string[] = []
   const forwardOpt = (flag: string, value: string | undefined): void => {
     if (value !== undefined) opts.push(flag, value)
@@ -177,20 +177,9 @@ function parseCliArgs() {
   forward('--inventory', values.inventory)
   if (values['dry-run']) collect.push('--dry-run')
 
-  // ── 설정 파일 기본값 ────────────────────────────────────────────────────
-  // 수집기의 기본 경로(apps.json, inventory.<앱>.<환경>.json)는 CWD 상대라서,
-  // 전역 링크된 이 명령을 아무 데서나 실행하면 못 찾는다. CWD 에 apps.json 이
-  // 있으면 기존 파이프 모드처럼 수집기 기본값(CWD)에 맡기고, 없으면 수집기
-  // 바이너리를 찾을 때와 같은 원리로 저장소 루트의 설정을 명시해서 넘긴다.
-  if (collect.length > 0 && values.apps === undefined && !existsSync('apps.json')) {
-    const rootApps = fileURLToPath(new URL('../../apps.json', import.meta.url))
-    if (existsSync(rootApps)) {
-      collect.push('--apps', rootApps)
-      if (values.inventory === undefined) {
-        collect.push('--inventory', fileURLToPath(new URL('../../inventory', import.meta.url)))
-      }
-    }
-  }
+  // 설정 파일(apps.json, inventory.<앱>.<환경>.json)의 기본 경로 폴백
+  // (CWD → ~/.config/logstitch/)은 수집기가 스스로 한다. 여기서 겹쳐 찾으면
+  // 규칙이 두 벌이 된다 — 플래그 검증을 위임하는 것과 같은 원칙.
 
   // ── 원본 보존용 실행 정보 (수집 모드, dry-run 제외) ─────────────────────
   const fields: Record<string, string> = {}
@@ -222,7 +211,7 @@ function parseCliArgs() {
   }
 }
 
-/** .runs 에 남길 실행 정보. 기존 수집 스크립트의 meta.json 과 같은 모양이다. */
+/** run 디렉토리에 남길 실행 정보. 기존 수집 스크립트의 meta.json 과 같은 모양이다. */
 interface RunInfo {
   app: string
   env: string
@@ -230,11 +219,17 @@ interface RunInfo {
   opts: string[]
 }
 
+/** 수집 원본 보관 루트: $XDG_STATE_HOME/logstitch/runs 또는 ~/.local/state/logstitch/runs. */
+function runsRoot(): string {
+  const state = process.env['XDG_STATE_HOME']
+  const base = state !== undefined && state !== '' ? state : join(homedir(), '.local', 'state')
+  return join(base, 'logstitch', 'runs')
+}
+
 /**
- * .runs/<로컬시각>-<앱>-<주값 8자>/ 를 만들고 meta.json 을 쓴다.
+ * <runs 루트>/<로컬시각>-<앱>-<주값 8자>/ 를 만들고 meta.json 을 쓴다.
  * 이름 규약은 기존 수집 스크립트가 만들던 것과 같다 (20260911-150417-forwarder-rjcgd0cu).
  */
-// ponytail: .runs 는 항상 저장소 루트에 쓴다 — 다른 위치가 필요해지면 그때 플래그로
 function newRunDir(run: RunInfo): string {
   const now = new Date()
   const p = (n: number): string => String(n).padStart(2, '0')
@@ -244,9 +239,7 @@ function newRunDir(run: RunInfo): string {
   const clean = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, '_')
   const slug = clean(Object.values(run.fields)[0] ?? '').slice(0, 8) || 'run'
 
-  const dir = fileURLToPath(
-    new URL(`../../.runs/${stamp}-${clean(run.app)}-${slug}`, import.meta.url),
-  )
+  const dir = join(runsRoot(), `${stamp}-${clean(run.app)}-${slug}`)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'meta.json'),
@@ -261,16 +254,12 @@ function newRunDir(run: RunInfo): string {
   return dir
 }
 
-/**
- * 수집기(Go 바이너리) 경로를 정한다:
- * --collector > $LOGSTITCH_COLLECTOR > 저장소의 빌드 산출물 > PATH.
- */
+/** 수집기(Go 바이너리) 경로를 정한다: --collector > $LOGSTITCH_COLLECTOR > PATH. */
 function resolveCollector(flagValue: string | undefined): string {
   if (flagValue !== undefined) return flagValue
   const fromEnv = process.env['LOGSTITCH_COLLECTOR']
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
-  const local = fileURLToPath(new URL('../../.bin/logstitch', import.meta.url))
-  return existsSync(local) ? local : 'logstitch'
+  return 'logstitch'
 }
 
 async function main(): Promise<number> {
@@ -286,7 +275,7 @@ async function main(): Promise<number> {
     child.on('error', (error) => {
       fail(
         `수집기를 실행할 수 없습니다 (${bin}): ${error.message}\n` +
-          `       go build -C collector -o ../.bin/logstitch . 으로 빌드하거나\n` +
+          `       logstitch 바이너리를 PATH 에 두거나\n` +
           `       LOGSTITCH_COLLECTOR 또는 --collector 로 경로를 지정하세요`,
       )
     })
@@ -325,7 +314,7 @@ async function main(): Promise<number> {
 
   // ── 원본 보존 ─────────────────────────────────────────────────────────
   // 수집기를 파서가 삼키는 구조라 여기서 남기지 않으면 원본 NDJSON 이
-  // 사라진다. 첫 이벤트가 오면 .runs/ 아래에 raw.ndjson 을 연다 (수집기가
+  // 사라진다. 첫 이벤트가 오면 runsRoot() 아래에 raw.ndjson 을 연다 (수집기가
   // 검증에서 죽어 아무것도 안 오면 빈 디렉토리도 안 생긴다). 같은 검색을
   // ssh 없이 재파싱할 수 있다: logstitch-parse [파서 옵션] < raw.ndjson
   let rawSink: WriteStream | null = null

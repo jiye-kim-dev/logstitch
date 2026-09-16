@@ -45,6 +45,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -100,9 +101,11 @@ func main() {
 
 func run() error {
 	var (
-		appsPath      = flag.String("apps", apps.DefaultPath, "앱 설정 JSON 경로")
-		inventoryBase = flag.String("i", "inventory",
-			"인벤토리 기본 이름. --app/--env 와 합쳐 <기본이름>.<앱>.<환경>.json 을 읽는다")
+		appsPath = flag.String("apps", "",
+			"앱 설정 JSON 경로. 기본: ./apps.json → ~/.config/logstitch/apps.json")
+		inventoryBase = flag.String("i", "",
+			"인벤토리 기본 이름. --app/--env 와 합쳐 <기본이름>.<앱>.<환경>.json 을 읽는다.\n"+
+				"기본: ./inventory → ~/.config/logstitch/inventory")
 		app    = flag.String("app", "", "대상 애플리케이션 (필수). 예: ai-stt")
 		env    = flag.String("env", "", "대상 환경 (필수). 예: prod, stage, dev")
 		rid    = flag.String("rid", "", "--field rid=<값> 의 축약형")
@@ -126,6 +129,8 @@ func run() error {
 	flag.Var(&areas, "area", "특정 영역만 조회 (반복 가능)")
 	flag.StringVar(inventoryBase, "inventory", *inventoryBase, "-i 의 긴 이름")
 	flag.Parse()
+
+	*appsPath, *inventoryBase = configDefaults(*appsPath, *inventoryBase)
 
 	if *serve != "" {
 		return serveHTTP(*serve, *appsPath, *inventoryBase)
@@ -163,6 +168,48 @@ func run() error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// configDefaults 는 --apps/-i 를 안 줬을 때의 기본 경로를 정한다.
+//
+// CWD 에 apps.json 이 있으면 지금까지처럼 CWD 를 설정 디렉토리로 쓰고,
+// 없으면 ~/.config/logstitch (또는 $XDG_CONFIG_HOME/logstitch) 를 쓴다 —
+// zip 으로 설치한 바이너리를 아무 디렉토리에서나 실행할 수 있게.
+//
+// apps 와 인벤토리는 한 벌의 설정이므로 디렉토리 결정은 apps.json 존재로
+// 한 번만 한다 (apps 는 CWD, 인벤토리는 홈처럼 반반이 되지 않게).
+func configDefaults(appsPath, inventoryBase string) (string, string) {
+	if appsPath != "" && inventoryBase != "" {
+		return appsPath, inventoryBase
+	}
+	dir := "."
+	if _, err := os.Stat(apps.DefaultPath); err != nil {
+		if cfg := userConfigDir(); cfg != "" {
+			dir = cfg
+		}
+	}
+	if appsPath == "" {
+		appsPath = filepath.Join(dir, apps.DefaultPath)
+	}
+	if inventoryBase == "" {
+		inventoryBase = filepath.Join(dir, "inventory")
+	}
+	return appsPath, inventoryBase
+}
+
+// userConfigDir 는 $XDG_CONFIG_HOME/logstitch 또는 ~/.config/logstitch 다.
+//
+// os.UserConfigDir 를 쓰지 않는 이유: macOS 에서 ~/Library/Application Support
+// 를 돌려주는데, 팀 안내문은 모든 OS 에서 ~/.config/logstitch 하나로 통일한다.
+func userConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "logstitch")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "logstitch")
 }
 
 // execute 는 검증이 끝난 요청 하나를 실행하고 NDJSON 을 out 에 쓴다.

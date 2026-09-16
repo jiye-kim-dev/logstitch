@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,6 +42,51 @@ func criteriaOf(req request) []string {
 		out = append(out, c.Field+"="+c.Value)
 	}
 	return out
+}
+
+func TestConfigDefaults(t *testing.T) {
+	t.Run("명시한 플래그는 그대로 둔다", func(t *testing.T) {
+		gotApps, gotInv := configDefaults("a.json", "inv")
+		if gotApps != "a.json" || gotInv != "inv" {
+			t.Errorf("명시 플래그가 바뀌었다: %q, %q", gotApps, gotInv)
+		}
+	})
+
+	t.Run("CWD 에 apps.json 이 있으면 CWD 를 쓴다", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if err := os.WriteFile("apps.json", []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gotApps, gotInv := configDefaults("", "")
+		if gotApps != "apps.json" || gotInv != "inventory" {
+			t.Errorf("CWD 우선이 아니다: %q, %q", gotApps, gotInv)
+		}
+	})
+
+	t.Run("CWD 에 없으면 XDG_CONFIG_HOME/logstitch 를 쓴다", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", "/cfg")
+		gotApps, gotInv := configDefaults("", "")
+		if gotApps != filepath.Join("/cfg", "logstitch", "apps.json") ||
+			gotInv != filepath.Join("/cfg", "logstitch", "inventory") {
+			t.Errorf("XDG 폴백이 아니다: %q, %q", gotApps, gotInv)
+		}
+		// 한쪽만 명시하면 나머지만 폴백된다.
+		gotApps, gotInv = configDefaults("given.json", "")
+		if gotApps != "given.json" || gotInv != filepath.Join("/cfg", "logstitch", "inventory") {
+			t.Errorf("부분 폴백이 아니다: %q, %q", gotApps, gotInv)
+		}
+	})
+
+	t.Run("XDG_CONFIG_HOME 이 없으면 ~/.config/logstitch", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("HOME", "/home/u")
+		gotApps, _ := configDefaults("", "")
+		if gotApps != filepath.Join("/home/u", ".config", "logstitch", "apps.json") {
+			t.Errorf("HOME 폴백이 아니다: %q", gotApps)
+		}
+	})
 }
 
 func TestBuildRequestHappyPath(t *testing.T) {
