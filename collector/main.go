@@ -87,6 +87,9 @@ type request struct {
 	DryRun     bool
 }
 
+// version 은 릴리스 빌드에서 -ldflags "-X main.version=<태그>" 로 박힌다 (Makefile).
+var version = "dev"
+
 type stringList []string
 
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
@@ -124,11 +127,17 @@ func run() error {
 			"앱의 필수 필드 검사를 건너뛴다 (함수명 등 임시 검색용). --field 는 최소 하나 필요")
 		serve = flag.String("serve", "",
 			"HTTP 서버로 실행 (예: :8080). POST /collect 가 CLI 와 같은 수집을 실행한다")
+		showVersion = flag.Bool("version", false, "버전을 출력하고 끝낸다")
 	)
 	flag.Var(&fields, "field", "검색 조건 (반복 가능). 형식: key=value")
 	flag.Var(&areas, "area", "특정 영역만 조회 (반복 가능)")
 	flag.StringVar(inventoryBase, "inventory", *inventoryBase, "-i 의 긴 이름")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
 
 	*appsPath, *inventoryBase = configDefaults(*appsPath, *inventoryBase)
 
