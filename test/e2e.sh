@@ -54,12 +54,17 @@ step "3. 파이프라인 (가짜 ssh)"
 export PATH="$ROOT/test/fakebin:$PATH"
 export LOGSTITCH_FIXTURES="$ROOT/test/fixtures"
 
+# 수집 원본은 $XDG_STATE_HOME/logstitch/runs 로 간다 — 실제 상태 디렉토리를
+# 테스트 잔여물로 오염시키지 않도록 임시 디렉토리로 격리한다.
+export XDG_STATE_HOME="$(mktemp -d)"
+
 RAW="$(mktemp)"
 OUT="$(mktemp)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.err"' EXIT
+CFG_HOME="$(mktemp -d)"
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.xdg" "$OUT.err"; rm -rf "$XDG_STATE_HOME" "$CFG_HOME"' EXIT
 
-# 단일 진입점이 .runs 에 남긴 원본 디렉토리를 stderr 의 "[원본]" 줄에서 찾아 지운다.
-# (e2e 가 실제 .runs 를 테스트 잔여물로 오염시키지 않기 위해서)
+# 단일 진입점이 남긴 원본 run 디렉토리를 stderr 의 "[원본]" 줄에서 찾아 지운다.
+# (XDG_STATE_HOME 격리에 더한 이중 안전장치)
 cleanup_run_dir() {
   local dir
   dir=$(sed -n 's/^\[원본\] \(.*\)\/raw\.ndjson$/\1/p' "$1" | head -1)
@@ -170,19 +175,25 @@ diff -q "$OUT" "$OUT.wrap" >/dev/null \
   && ok "단일 진입점 출력이 파이프 모드와 동일" \
   || bad "단일 진입점 출력이 파이프 모드와 다름"
 
-# 수집 모드는 원본 NDJSON 을 .runs 에 무조건 남긴다
+# 수집 모드는 원본 NDJSON 을 $XDG_STATE_HOME/logstitch/runs 에 무조건 남긴다
 run_dir=$(sed -n 's/^\[원본\] \(.*\)\/raw\.ndjson$/\1/p' "$OUT.err" | head -1)
 # grep -c 는 파일이 없으면 stdout 이 비므로(종료코드 2) 0 으로 보정한다
 saved_lines=$(grep -c '"type":"line"' "$run_dir/raw.ndjson" 2>/dev/null)
 saved_lines=${saved_lines:-0}
 if [ -n "$run_dir" ] && [ "$saved_lines" -eq 15 ] && [ -f "$run_dir/meta.json" ]; then
-  ok "원본 NDJSON 이 .runs 에 저장됨 (15줄 + meta.json)"
+  ok "원본 NDJSON 이 run 디렉토리에 저장됨 (15줄 + meta.json)"
 else
   bad "원본 NDJSON 저장 실패 (dir=${run_dir:-없음}, 줄=$saved_lines)"
 fi
+case "$run_dir" in
+  "$XDG_STATE_HOME"/logstitch/runs/*)
+    ok "run 디렉토리가 XDG 상태 디렉토리 아래에 생김" ;;
+  *)
+    bad "run 디렉토리 위치가 XDG 상태 디렉토리가 아님: $run_dir" ;;
+esac
 grep -q '"app":"sample"' "$run_dir/meta.json" 2>/dev/null \
-  && ok ".runs meta.json 에 실행 정보가 남음" \
-  || bad ".runs meta.json 내용이 비정상"
+  && ok "run 디렉토리 meta.json 에 실행 정보가 남음" \
+  || bad "run 디렉토리 meta.json 내용이 비정상"
 cleanup_run_dir "$OUT.err"
 
 LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
@@ -193,13 +204,25 @@ grep -q 'grep -F' "$OUT.dry" \
   || bad "단일 진입점 dry-run 이 동작하지 않음"
 
 # --apps/--inventory 없이 CWD(test/)에 apps.json 이 있으면 그걸 쓴다 —
-# 파이프 모드와 같은 규약. (CWD 에 없을 때의 저장소 루트 폴백은 루트
-# apps.json 존재에 의존하므로 여기서는 검증하지 않는다)
+# 파이프 모드와 같은 규약.
 (cd test && LOGSTITCH_COLLECTOR="$BIN" node ../parser/src/cli.ts \
   --app sample --env test --rid "$RID" --max-lines 0 --no-color) > "$OUT.cwd" 2> "$OUT.err"
 diff -q "$OUT" "$OUT.cwd" >/dev/null \
   && ok "수집 모드가 CWD 의 설정(apps.json)을 우선 사용" \
   || bad "CWD 의 apps.json 이 무시됨"
+cleanup_run_dir "$OUT.err"
+
+# CWD 에 apps.json 이 없으면 수집기가 $XDG_CONFIG_HOME/logstitch 를 본다 —
+# zip 으로 설치한 바이너리를 아무 디렉토리에서나 실행하는 v2 배포 형태.
+mkdir -p "$CFG_HOME/logstitch"
+cp "$APPS" "$CFG_HOME/logstitch/apps.json"
+cp "$ROOT"/test/inventory.*.test.json "$CFG_HOME/logstitch/"
+(cd "$XDG_STATE_HOME" && XDG_CONFIG_HOME="$CFG_HOME" LOGSTITCH_COLLECTOR="$BIN" \
+  node "$ROOT/parser/src/cli.ts" \
+  --app sample --env test --rid "$RID" --max-lines 0 --no-color) > "$OUT.xdg" 2> "$OUT.err"
+diff -q "$OUT" "$OUT.xdg" >/dev/null \
+  && ok "CWD 에 설정이 없으면 XDG 설정 디렉토리로 폴백" \
+  || bad "XDG 설정 디렉토리 폴백이 동작하지 않음"
 cleanup_run_dir "$OUT.err"
 
 # 수집기가 검증에서 죽으면 (exit 2) 파서도 같은 코드로 끝나야 한다

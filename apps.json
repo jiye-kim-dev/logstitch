@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "apps.json sample data"
+  ],
+  "apps": {
+    "subtitle": {
+      "required": ["uuid"],
+      "view": { "default": "flow" }
+    },
+    "split": {
+      "required": ["user_key"],
+      "view": { "default": "contention", "lane": "server_id", "session": "trace_id", "laneFallback": "source" }
+    }
+  }
+}
