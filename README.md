@@ -2,9 +2,6 @@
 
 여러 노드에 흩어진 JSON 로그를 특정 필드값(rid 등)으로 긁어와 UTC 시간순으로 병합한다.
 
-`python-practice/ssh-logtrace` 의 파이썬 구현을 **Go 수집기 + TypeScript 파서**로
-이식한 것이다. 두 조각으로 나눈 이유는 하나다.
-
 **파싱은 이 시스템에서 가장 자주 바뀌는 코드다.** 로그 포맷이 슬쩍 바뀌고, 필드가
 추가되고, 모듈이 하나 늘어난다. 반대로 SSH 전송(커넥션, 타임아웃, 팬아웃, 재시도)은
 한 번 제대로 만들면 거의 안 건드린다. 그래서 **잘 안 바뀌는 걸 Go 에, 자주 바뀌는 걸
@@ -75,7 +72,7 @@ test/                      가짜 ssh + 픽스처 + 파이썬 대조
 `~/.ssh/config` 별칭 등록 → 키 생성 → 공개키 배포 순서로 한 번만 하면 된다.
 순서가 중요하다.
 
-**1. `~/.ssh/config` 에 별칭 등록** (IP는 여기에만 산다)
+**1. `~/.ssh/config` 에 별칭 등록** (서버 IP 정보는 여기에만 명시됨)
 
 ```
 Host req-01
@@ -94,7 +91,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_logstitch -C logstitch
 ssh-add --apple-use-keychain ~/.ssh/id_logstitch   # macOS: 패스프레이즈 한 번만
 ```
 
-**3. 공개키 배포** — 반드시 **별칭으로** 한다
+**3. 공개키 배포** — 반드시 **SSH 에 등록된 서버 별칭으로** 한다
 
 ```sh
 ssh-copy-id -i ~/.ssh/id_logstitch.pub req-01
@@ -163,14 +160,14 @@ Host req-* sch-* rcv-*
 
 ## 빌드
 
+> **직접 빌드해서 사용할 경우 참고.** 도구만 쓸 사람은 이 절을 건너뛰고
+> 아래 배포 패키징 절의 zip 설치만 하면 된다.
+
 ```sh
-# 수집기. -o 는 -C 로 이동한 디렉토리 기준이라 ../ 가 필요하다.
-# (collector 는 자기 go.mod 를 가진 별도 모듈이라 루트에서 ./collector 로는 못 짓는다)
-mkdir -p .bin   # .gitignore 대상이라 clone 직후에는 없다
-go build -C collector -o ../.bin/logstitch .
+make    # 수집기 → .bin/logstitch (버전은 git describe 가 박힌다: logstitch --version)
 
 # 파서는 빌드 단계가 없다. Node 22.18+ 의 타입 스트리핑으로 .ts 를 바로 실행한다.
-# 의존성은 타입체크·테스트용으로만 필요하다.
+# 의존성은 타입체크·테스트·번들용으로만 필요하다.
 (cd parser && npm install)
 
 # 파서를 이름으로 부른다 — package.json 의 bin("logstitch-parse")을 npm 이
@@ -183,8 +180,40 @@ PATH 의 `logstitch` 로 찾으므로(단일 진입점 절 참고) 셸 초기화
 `export PATH="<저장소>/.bin:$PATH"` 를 추가하거나, `LOGSTITCH_COLLECTOR` 에
 바이너리 경로를 지정한다. 링크 해제는 `npm rm -g logstitch-parser`.
 
-`./test/e2e.sh` 도 첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도
+참고로 `./test/e2e.sh` 도 첫 단계에서 수집기를 빌드하므로, 그것만 한 번 돌려도
 `.bin/logstitch` 가 생긴다.
+
+### 배포 패키징 (`make release`)
+
+git tag 기준으로 release 처리
+
+```sh
+git tag v1.1.0
+make release    # dist/logstitch-v1.1.0-<os>-<arch>.zip (darwin/linux × arm64/amd64)
+```
+
+zip 안에는 두 실행 파일이 평평하게 들어 있다 — `logstitch`(정적 Go 바이너리,
+의존성 0)와 `logstitch-parse`(esbuild 단일 파일, 실행에 Node 22+ 필요).
+받는 쪽은 PATH 에 풀면 끝이다:
+
+```sh
+unzip logstitch-v1.1.0-darwin-arm64.zip -d ~/.local/bin
+```
+
+macOS 에서 **브라우저로** 받은 미서명 바이너리는 Gatekeeper 가 차단한다
+("손상되어 열 수 없음"). 격리 속성을 지우면 된다 (`curl` 다운로드는 안 붙는다):
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/logstitch ~/.local/bin/logstitch-parse
+```
+
+설정 파일은 `~/.config/logstitch/` 에 둔다 (단일 진입점 절의 탐색 규칙 참고):
+
+```sh
+mkdir -p ~/.config/logstitch
+# apps.json 과 inventory.<앱>.<환경>.json 을 이 폴더에 복사
+# (inventory 는 저장소에 없다 — 팀 공유 채널에서 받을 것)
+```
 
 ## 사용
 

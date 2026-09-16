@@ -3,6 +3,7 @@
 
 # 빌드 산출물
 .bin/
+dist/
 node_modules/
 *.tsbuildinfo
 

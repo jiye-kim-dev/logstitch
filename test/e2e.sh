@@ -61,7 +61,7 @@ export XDG_STATE_HOME="$(mktemp -d)"
 RAW="$(mktemp)"
 OUT="$(mktemp)"
 CFG_HOME="$(mktemp -d)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.xdg" "$OUT.err"; rm -rf "$XDG_STATE_HOME" "$CFG_HOME"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.xdg" "$OUT.bundle" "$OUT.err"; rm -rf "$XDG_STATE_HOME" "$CFG_HOME"' EXIT
 
 # 단일 진입점이 남긴 원본 run 디렉토리를 stderr 의 "[원본]" 줄에서 찾아 지운다.
 # (XDG_STATE_HOME 격리에 더한 이중 안전장치)
@@ -165,6 +165,14 @@ grep -q 'rotated file hit' "$OUT" \
 grep -q '^~' "$OUT" \
   && ok "시각 없는 연속 줄이 직전 시각을 물려받음" \
   || bad "시각 물려받기가 동작하지 않음"
+
+# esbuild 번들(make bundle 산출물)이 있으면 src 직접 실행과 출력이 같아야 한다
+if [ -x "$ROOT/dist/logstitch-parse" ]; then
+  "$ROOT/dist/logstitch-parse" --no-color < "$RAW" > "$OUT.bundle" 2>/dev/null
+  diff -q "$OUT" "$OUT.bundle" >/dev/null \
+    && ok "esbuild 번들 출력이 소스 실행과 동일" \
+    || bad "번들 출력이 소스 실행과 다름 (make bundle 다시 실행 후 확인)"
+fi
 
 # ── 단일 진입점 — 파서가 수집기를 spawn 해도 파이프 모드와 출력이 같아야 한다
 LOGSTITCH_COLLECTOR="$BIN" node parser/src/cli.ts \
