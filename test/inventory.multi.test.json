@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "multi 앱용 테스트 인벤토리 (-i test/inventory --app multi --env test).",
+    "",
+    "scheduler 영역만 둔다. 그 픽스처의 폴링 줄에 rid 와 state 가 같이",
+    "찍히므로, 두 값의 교집합이 원격에서 제대로 계산되는지 볼 수 있다."
+  ],
+  "ssh_opts": [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "LogLevel=ERROR"
+  ],
+  "areas": [
+    {
+      "name": "scheduler",
+      "hosts": [
+        "kw47",
+        "dead-01"
+      ],
+      "sources": [
+        {
+          "name": "scheduler",
+          "paths": [
+            "var/log/ai-stt-scheduler/scheduler.log*"
+          ]
+        },
+        {
+          "name": "debug",
+          "paths": [
+            "var/log/ai-stt-scheduler/debug.log*"
+          ]
+        },
+        {
+          "name": "monitor",
+          "paths": [
+            "var/log/ai-stt-scheduler/monitor.log*"
+          ]
+        }
+      ]
+    }
+  ]
+}
