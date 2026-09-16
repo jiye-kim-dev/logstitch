@@ -10,7 +10,9 @@ node_modules/
 # 테스트 픽스처는 make_fixtures.sh 가 만든다
 test/fixtures/
 
-# 실제 환경 인벤토리는 저장소에 넣지 않는다
+# 실제 환경 설정은 저장소에 넣지 않는다 — 실물은 ~/.config/logstitch/ 에 둔다
+apps.json
+!test/apps.json
 inventory.json
 inventory.*.json
 !inventory.example.json

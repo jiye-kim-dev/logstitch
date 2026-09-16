@@ -19,7 +19,7 @@ logstitch --app ai-stt --env prod --rid abc123 | logstitch-parse
 ## 구성
 
 ```
-apps.json                  앱별 필수 필드 (환경 무관, 커밋함)
+apps.example.json          앱별 필수 필드 샘플 — 실물 apps.json 은 ~/.config/logstitch/ 에 (커밋 안 함)
 inventory.<앱>.<환경>.json    호스트와 로그 경로 (환경별, 커밋 안 함)
 
 collector/                 Go — 로그 내용을 모른다
