@@ -21,6 +21,7 @@ logstitch --app ai-stt --env prod --rid abc123 | logstitch-parse
 ```
 apps.example.json          앱별 필수 필드 샘플 — 실물 apps.json 은 ~/.config/logstitch/ 에 (커밋 안 함)
 inventory.<앱>.<환경>.json    호스트와 로그 경로 (환경별, 커밋 안 함)
+schemas/                   위 두 파일의 JSON Schema — IDE 자동완성·검증용
 
 collector/                 Go — 로그 내용을 모른다
   main.go                  CLI 진입점 — 인자 검증, 타깃 전개, 종료코드
@@ -140,6 +141,11 @@ Host req-* sch-* rcv-*
 
 **`required` 는 순서가 의미를 가진다.** 원격에서 grep 을 이 순서로 이어붙이므로,
 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
+
+apps.json 과 인벤토리 모두 JSON Schema 가 있다 (`schemas/`). 파일 맨 위에
+`"$schema": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/apps.schema.json"`
+을 넣으면 IDE 가 자동완성·오타 검증을 해준다 (인벤토리는 `inventory.schema.json`).
+코드는 이 키를 무시하므로 안 넣어도 동작에는 차이가 없다.
 
 **6. 인벤토리 작성**
 
