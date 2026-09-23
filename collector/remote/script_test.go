@@ -134,9 +134,35 @@ func TestBuildScriptIntersection(t *testing.T) {
 		t.Errorf("이어붙인 값이 인용되지 않았다:\n%s", quoted)
 	}
 
-	// 값이 없으면 아무것도 하지 않는다.
+	// 값도 시간 범위도 없으면 아무것도 하지 않는다.
 	if BuildScript(sources, Query{}) != "exit 0\n" {
-		t.Error("값이 없는데 스크립트가 생성됐다")
+		t.Error("값도 범위도 없는데 스크립트가 생성됐다")
+	}
+}
+
+// TestBuildScriptNoValues 는 값 없이 시간 범위만으로 거르는 스크립트를
+// 고정한다 (--no-required + --from/--to 조회).
+func TestBuildScriptNoValues(t *testing.T) {
+	sources := []inventory.Source{
+		{Name: "app", Paths: []string{"/var/log/app.log*"}},
+	}
+	script := BuildScript(sources, Query{
+		TimeFrom: "2026-09-04T00:00",
+		TimeTo:   "2026-09-04",
+	})
+
+	if strings.Contains(script, "grep") {
+		t.Errorf("값이 없는데 grep 이 들어갔다:\n%s", script)
+	}
+	if !strings.Contains(script,
+		`cat -- "$f" 2>/dev/null | awk -v from=2026-09-04T00:00 -v to=2026-09-04`) {
+		t.Errorf("일반 파일 분기가 cat | 시각 필터가 아니다:\n%s", script)
+	}
+	if !strings.Contains(script, `gzip -cd -- "$f" 2>/dev/null | awk -v from=`) {
+		t.Errorf(".gz 분기가 gzip | 시각 필터가 아니다:\n%s", script)
+	}
+	if !strings.HasSuffix(script, "exit 0\n") {
+		t.Error("스크립트가 exit 0 으로 끝나지 않는다")
 	}
 }
 

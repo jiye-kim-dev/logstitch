@@ -91,6 +91,8 @@ const awkTimeRange = `'{
 type Query struct {
 	// Values 는 grep -F 교집합 검색값이다. 순서가 의미를 가진다 —
 	// 선택적인(결과가 적은) 값을 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
+	// 비어 있으면 grep 없이 시간 범위만으로 거른다 — 전 구간을 훑으므로
+	// 호출부(main)가 범위를 요구하고 길이를 제한한다.
 	Values []string
 
 	// After 는 grep -A 컨텍스트 줄 수다. Values 가 하나일 때만 쓸 수 있다.
@@ -128,23 +130,34 @@ type Query struct {
 // 더 붙인다. grep 다음인 이유: grep -F 가 awk 보다 훨씬 싸므로 먼저 줄여야
 // awk 가 훑을 양이 준다. 범위가 없으면 스크립트는 기존과 바이트 단위로 같다.
 func BuildScript(sources []inventory.Source, q Query) string {
-	if len(q.Values) == 0 {
+	// 값도 시간 범위도 없으면 아무것도 긁지 않는다 (호출부가 먼저 막지만 방어).
+	if len(q.Values) == 0 && q.TimeFrom == "" && q.TimeTo == "" {
 		return "exit 0\n"
 	}
 
-	first := ShQuote(q.Values[0])
+	// 값이 없으면(시간 범위 조회) grep 단을 통째로 빼고 파일을 그대로 흘린다.
+	gzCmd := `gzip -cd -- "$f" 2>/dev/null`
+	plainCmd := `cat -- "$f" 2>/dev/null`
+	if len(q.Values) > 0 {
+		first := ShQuote(q.Values[0])
 
-	ctx := ""
-	if q.After > 0 {
-		ctx = fmt.Sprintf("-A %d ", q.After)
-	}
+		ctx := ""
+		if q.After > 0 {
+			ctx = fmt.Sprintf("-A %d ", q.After)
+		}
 
-	// 두 번째 값부터는 파이프로 이어붙인다.
-	var chain strings.Builder
-	for _, value := range q.Values[1:] {
-		fmt.Fprintf(&chain, " | grep -F -a -e %s", ShQuote(value))
+		// 두 번째 값부터는 파이프로 이어붙인다.
+		var chain strings.Builder
+		for _, value := range q.Values[1:] {
+			fmt.Fprintf(&chain, " | grep -F -a -e %s", ShQuote(value))
+		}
+		rest := chain.String()
+
+		gzCmd = fmt.Sprintf(`gzip -cd -- "$f" 2>/dev/null | grep -F -a %s-e %s%s`,
+			ctx, first, rest)
+		plainCmd = fmt.Sprintf(`grep -F -a -h %s-e %s -- "$f" 2>/dev/null%s`,
+			ctx, first, rest)
 	}
-	rest := chain.String()
 
 	timeFilter := ""
 	if q.TimeFrom != "" || q.TimeTo != "" {
@@ -159,12 +172,8 @@ func BuildScript(sources []inventory.Source, q Query) string {
 			fmt.Fprintf(&b, "for f in %s; do\n", path)
 			b.WriteString("  [ -r \"$f\" ] || continue\n")
 			b.WriteString("  case \"$f\" in\n")
-			fmt.Fprintf(&b,
-				"    *.gz) gzip -cd -- \"$f\" 2>/dev/null | grep -F -a %s-e %s%s%s ;;\n",
-				ctx, first, rest, timeFilter)
-			fmt.Fprintf(&b,
-				"    *)    grep -F -a -h %s-e %s -- \"$f\" 2>/dev/null%s%s ;;\n",
-				ctx, first, rest, timeFilter)
+			fmt.Fprintf(&b, "    *.gz) %s%s ;;\n", gzCmd, timeFilter)
+			fmt.Fprintf(&b, "    *)    %s%s ;;\n", plainCmd, timeFilter)
 			b.WriteString("  esac | awk -v f=\"$f\" -v s=" + qsrc + " " + awkPrefix + "\n")
 			b.WriteString("done\n")
 		}
