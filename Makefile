@@ -2,6 +2,7 @@
 #
 #   make            로컬 개발 빌드 — .bin/logstitch (호스트 플랫폼)
 #   make bundle     파서를 단일 실행 파일로 번들 — dist/logstitch-parse
+#   make install    로컬 설치 — 빌드해서 ~/.local/bin 에 복사 (BINDIR 로 변경 가능)
 #   make release    배포용 zip — dist/logstitch-<버전>-<os>-<arch>.zip
 #   make test       e2e 전체 (빌드·단위 테스트 포함)
 #   make clean
@@ -14,7 +15,7 @@ LDFLAGS   := -X main.version=$(VERSION)
 # 배포 대상 플랫폼. 팀원 머신이 늘면 여기만 추가한다.
 PLATFORMS := darwin-arm64 darwin-amd64 linux-amd64 linux-arm64
 
-.PHONY: build bundle release test clean
+.PHONY: build bundle install release test clean
 
 build:
 	mkdir -p .bin
@@ -29,6 +30,14 @@ bundle:
 	cd parser && npx esbuild src/cli.ts --bundle --platform=node --target=node22 \
 		--format=cjs --outfile=../dist/logstitch-parse
 	chmod +x dist/logstitch-parse
+
+# 로컬 설치 — README 의 zip 설치와 같은 위치를 최신 빌드로 덮는다.
+BINDIR ?= $(HOME)/.local/bin
+
+install: build bundle
+	mkdir -p $(BINDIR)
+	cp .bin/logstitch dist/logstitch-parse $(BINDIR)/
+	@$(BINDIR)/logstitch --version
 
 release: bundle
 	@for p in $(PLATFORMS); do \
