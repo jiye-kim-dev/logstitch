@@ -124,7 +124,8 @@ func run() error {
 		maxLines   = flag.Int("max-lines", 50000, "호스트당 줄 수 상한. 0 이면 무제한")
 		dryRun     = flag.Bool("dry-run", false, "접속 없이 원격 명령만 출력")
 		noRequired = flag.Bool("no-required", false,
-			"앱의 필수 필드 검사를 건너뛴다 (함수명 등 임시 검색용). --field 는 최소 하나 필요")
+			"앱의 필수 필드 검사를 건너뛴다 (함수명 등 임시 검색용).\n"+
+				"--field 없이 쓰려면 --from 이 필요하고 범위는 24시간 이내여야 한다")
 		serve = flag.String("serve", "",
 			"HTTP 서버로 실행 (예: :8080). POST /collect 가 CLI 와 같은 수집을 실행한다")
 		showVersion = flag.Bool("version", false, "버전을 출력하고 끝낸다")
@@ -308,20 +309,10 @@ func buildRequest(
 	if err != nil {
 		return request{}, err
 	}
-	// apps.Load 가 required 를 비워두지 못하게 하므로 여기 걸리는 것은
-	// --no-required 로 검사를 끈 채 --field 를 하나도 안 준 경우뿐이다.
-	// 조건 없는 수집은 로그 전체를 긁어오므로 거부한다.
-	if len(criteria) == 0 {
-		return request{}, fmt.Errorf(
-			"검색 조건이 없습니다 — --no-required 여도 --field 를 최소 하나 줘야 합니다\n"+
-				"       예: logstitch --app %s --env %s --no-required --field source.function=<함수명>",
-			app, env)
-	}
-
 	if after < 0 {
 		return request{}, fmt.Errorf("--after 는 0 이상이어야 합니다")
 	}
-	if after > 0 && len(criteria) > 1 {
+	if after > 0 && len(criteria) != 1 {
 		// 이어붙인 grep 에서는 앞 grep 이 붙인 컨텍스트 줄이 뒤 grep 에
 		// 걸리지 않아 그대로 사라진다. 조용히 무효가 되는 대신 거부한다.
 		return request{}, fmt.Errorf(
@@ -346,6 +337,29 @@ func buildRequest(
 	if timeFrom != "" && timeTo != "" &&
 		!strings.HasPrefix(timeFrom, timeTo) && timeFrom > timeTo {
 		return request{}, fmt.Errorf("--from(%s) 이 --to(%s) 보다 뒤입니다", timeFrom, timeTo)
+	}
+
+	// apps.Load 가 required 를 비워두지 못하게 하므로 조건이 없다는 것은
+	// --no-required 로 검사를 끈 경우뿐이다. grep 앵커 없는 수집은 원격에서
+	// 파일 전 구간을 훑으므로, 시간 범위를 요구하고 24시간으로 제한한다.
+	if len(criteria) == 0 {
+		if timeFrom == "" {
+			return request{}, fmt.Errorf(
+				"검색 조건이 없습니다 — --no-required 로 조건 없이 조회하려면 --from 이 필요합니다\n"+
+					"       (범위는 24시간 이내. --to 를 생략하면 현재 시각까지로 계산합니다)\n"+
+					"       예: logstitch --app %s --env %s --no-required --from 2026-09-23T00:00 --to 2026-09-23T06:00",
+				app, env)
+		}
+		end := time.Now().UTC()
+		if timeTo != "" {
+			end = boundRangeEnd(timeTo)
+		}
+		if window := end.Sub(boundStart(timeFrom)); window > maxScanWindow {
+			return request{}, fmt.Errorf(
+				"조건 없는 조회의 시간 범위가 24시간을 넘습니다 (%.1f시간)\n"+
+					"       grep 없이 전 구간을 훑는 조회라 원격 부하를 막기 위해 24시간으로 제한합니다",
+				window.Hours())
+		}
 	}
 
 	return request{
@@ -400,6 +414,39 @@ func normalizeTimeBound(flagName, raw string) (string, error) {
 		return "", fmt.Errorf("--%s 가 실제 시각이 아닙니다: %q", flagName, raw)
 	}
 	return out, nil
+}
+
+// maxScanWindow 는 조건(grep 앵커) 없는 조회에 허용하는 최대 시간 범위다.
+// 원격에서 파일 전 구간을 awk 로만 거르므로 범위가 부하의 유일한 상한이다.
+const maxScanWindow = 24 * time.Hour
+
+// boundStart 는 정규화된 경계 문자열을 time.Time 으로 되돌린다.
+// normalizeTimeBound 를 통과한 값만 받으므로 파싱은 실패하지 않는다.
+func boundStart(s string) time.Time {
+	layout := "2006-01-02T15:04:05.999999999"[:len(s)]
+	t, _ := time.Parse(layout, s)
+	return t
+}
+
+// boundRangeEnd 는 준 정밀도 구간의 끝이다 — --to 2026-09-04 는 그날 전체를
+// 포함하므로 끝은 09-05 00:00 이다 (파서의 rangeEndNanos 와 같은 의미).
+func boundRangeEnd(s string) time.Time {
+	t := boundStart(s)
+	switch len(s) {
+	case len("2006-01-02"):
+		return t.AddDate(0, 0, 1)
+	case len("2006-01-02T15:04"):
+		return t.Add(time.Minute)
+	case len("2006-01-02T15:04:05"):
+		return t.Add(time.Second)
+	default:
+		// 소수 초 — 마지막 자릿수의 단위만큼 더한다 (.5 → 0.1초).
+		step := time.Nanosecond
+		for digits := len(s) - len("2006-01-02T15:04:05."); digits < 9; digits++ {
+			step *= 10
+		}
+		return t.Add(step)
+	}
 }
 
 // parseFields 는 key=value 목록을 파싱한다. 같은 키를 두 번 주면 거부한다.

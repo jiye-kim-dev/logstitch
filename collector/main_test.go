@@ -227,10 +227,13 @@ func TestNoRequired(t *testing.T) {
 		}
 	})
 
-	t.Run("조건이 아예 없으면 여전히 거부", func(t *testing.T) {
+	t.Run("조건도 시간 범위도 없으면 여전히 거부", func(t *testing.T) {
 		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true})
 		if err == nil {
 			t.Fatal("--no-required 로 조건 없이 통과했다 — 로그 전체를 긁게 된다")
+		}
+		if !strings.Contains(err.Error(), "--from") {
+			t.Errorf("에러가 --from 이 필요함을 알려주지 않는다: %v", err)
 		}
 	})
 
@@ -345,6 +348,71 @@ func TestTimeRangeValidation(t *testing.T) {
 			t.Errorf("경계가 잘못 전달됐다: from=%q to=%q", req.TimeFrom, req.TimeTo)
 		}
 	})
+}
+
+// TestNoCriteriaTimeRange 는 조건 없는 조회(--no-required + --field 없음)가
+// --from 을 요구하고 범위를 24시간으로 제한함을 고정한다. grep 앵커가 없으면
+// 원격에서 파일 전 구간을 훑으므로 범위가 부하의 유일한 상한이다.
+func TestNoCriteriaTimeRange(t *testing.T) {
+	t.Run("24시간 이내 범위면 조건 없이 통과", func(t *testing.T) {
+		// --to 2026-09-04 는 그날 전체 → 정확히 24시간이므로 허용 경계다.
+		req, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+			from: "2026-09-04T00:00", to: "2026-09-04"})
+		if err != nil {
+			t.Fatalf("24시간 범위가 거부됐다: %v", err)
+		}
+		if len(req.Criteria) != 0 {
+			t.Errorf("조건이 비어 있지 않다: %v", req.Criteria)
+		}
+	})
+
+	t.Run("24시간 초과면 거부", func(t *testing.T) {
+		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+			from: "2026-09-04", to: "2026-09-05"})
+		if err == nil {
+			t.Fatal("48시간 범위가 통과했다")
+		}
+		if !strings.Contains(err.Error(), "24시간") {
+			t.Errorf("에러가 24시간 제한을 알려주지 않는다: %v", err)
+		}
+	})
+
+	t.Run("to 를 생략하면 현재 시각까지로 계산한다", func(t *testing.T) {
+		// 먼 과거의 from 은 현재까지 24시간을 넘으므로 거부된다.
+		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+			from: "2026-09-04"})
+		if err == nil {
+			t.Fatal("과거 from + to 생략이 통과했다")
+		}
+	})
+
+	t.Run("조건이 있으면 24시간 제한을 받지 않는다", func(t *testing.T) {
+		// grep 앵커가 있으면 원격 전송량이 이미 좁혀지므로 제한 대상이 아니다.
+		_, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc",
+			from: "2026-09-01", to: "2026-09-10"})
+		if err != nil {
+			t.Errorf("조건 있는 넓은 범위가 거부됐다: %v", err)
+		}
+	})
+}
+
+// TestBoundRangeEnd 는 준 정밀도 구간 끝 계산을 고정한다 (파서 rangeEndNanos
+// 와 같은 의미여야 24시간 판정이 사용자 기대와 일치한다).
+func TestBoundRangeEnd(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"날짜만":  {"2026-09-04", "2026-09-05T00:00:00"},
+		"분까지":  {"2026-09-04T02:19", "2026-09-04T02:20:00"},
+		"초까지":  {"2026-09-04T02:19:24", "2026-09-04T02:19:25"},
+		"소수 초": {"2026-09-04T02:19:24.5", "2026-09-04T02:19:24.6"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := boundRangeEnd(c.in).Format("2006-01-02T15:04:05.999999999")
+			if got != c.want {
+				t.Errorf("boundRangeEnd(%q) = %s (기대 %s)", c.in, got, c.want)
+			}
+		})
+	}
 }
 
 // TestAfterConflictsWithMultipleFields 는 --after 가 조용히 무효가 되는 대신

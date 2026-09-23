@@ -73,6 +73,11 @@ describe('classifyMatch', () => {
   it('JSON 이 아닌 줄은 raw — 항상 살린다', () => {
     assert.deepEqual(classifyMatch(false, {}, 'rid', RID), { kind: 'raw' })
   })
+
+  it('검색값이 없으면(시간 범위 조회) field 로 둔다 — partial 오분류 방지', () => {
+    // 빈 값은 includes('') 가 항상 참이라 가드가 없으면 전부 partial 이 된다.
+    assert.deepEqual(classifyMatch(true, { msg: 'anything' }, '', ''), { kind: 'field' })
+  })
 })
 
 describe('Normalizer', () => {
