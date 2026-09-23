@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/apps.schema.json",
   "_comment": [
     "apps.json sample data"
   ],

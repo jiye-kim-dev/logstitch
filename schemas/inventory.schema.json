@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/inventory.schema.json",
+  "title": "logstitch inventory",
+  "description": "조회 대상 정의(인벤토리). 앱과 환경은 파일 안이 아니라 파일 이름에 산다 — <기본이름>.<앱>.<환경>.json. 근거: collector/inventory/inventory.go",
+  "type": "object",
+  "required": ["areas"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "$ref": "#/definitions/comment" },
+    "ssh_opts": {
+      "type": "array",
+      "description": "ssh 실행 인자. 생략하면 기본값(-o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR)을 쓴다.",
+      "items": { "type": "string" }
+    },
+    "areas": {
+      "type": "array",
+      "description": "모듈 단위의 조회 대상. 최소 1개.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/area" }
+    }
+  },
+  "definitions": {
+    "comment": {
+      "description": "사람용 주석. 코드는 읽지 않는다.",
+      "anyOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "area": {
+      "type": "object",
+      "required": ["name", "hosts", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "_comment": { "$ref": "#/definitions/comment" },
+        "name": {
+          "type": "string",
+          "description": "영역 이름. 출력 정렬과 요약의 구간 순서가 areas 의 정의 순서를 따른다.",
+          "minLength": 1
+        },
+        "hosts": {
+          "type": "array",
+          "description": "IP 가 아니라 ~/.ssh/config 의 별칭 — 이 프로그램은 IP 도 패스워드도 알지 못한다.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "영숫자로 시작하고 영숫자 . _ - 만 허용. 첫 글자가 '-' 면 ssh 가 옵션으로 파싱해 임의 명령 실행이 가능하므로 로딩 때 걸러낸다.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          }
+        },
+        "sources": {
+          "type": "array",
+          "description": "이 영역에서 긁을 로그 묶음. 최소 1개.",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/source" }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["name", "paths"],
+      "additionalProperties": false,
+      "properties": {
+        "_comment": { "$ref": "#/definitions/comment" },
+        "name": {
+          "type": "string",
+          "description": "소스 이름. contention 뷰의 laneFallback: 'source' 가 이 이름을 레인으로 쓴다.",
+          "minLength": 1
+        },
+        "paths": {
+          "type": "array",
+          "description": "원격 셸이 확장하는 glob. 로테이션된 .gz 도 잡히도록 보통 뒤에 * 를 붙여 쓴다.",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

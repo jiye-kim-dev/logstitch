@@ -1,10 +1,10 @@
 {
+  "$schema": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/inventory.schema.json",
   "_comment": [
     "inventory json 파일 예시",
     "",
     "앱과 환경은 파일 이름에 있다. <기본이름>.<앱>.<환경>.json 으로 나눠 쓴다",
-    "앱별 필수 필드는 apps.json 에 따로 적는다 (환경 무관).",
-    "",
+    "앱별 필수 필드는 apps.json 에 따로 적는다 (환경 무관)."
   ],
   "ssh_opts": [
     "-o",
