@@ -10,6 +10,7 @@ import {
   parseTs,
   pick,
   rangeEndNanos,
+  sniffTs,
   stripVolatile,
 } from '../src/fields.ts'
 
@@ -192,5 +193,28 @@ describe('mergeAliases', () => {
     assert.ok(merged.volatile.has('event_time'))
     assert.ok(merged.volatile.has('origin'))
     assert.ok(merged.volatile.has('ts')) // 전역 것도 유지
+  })
+})
+
+describe('sniffTs', () => {
+  it('슬래시 날짜를 읽는다 (lal 계열 비 JSON 줄)', () => {
+    // 이걸 못 읽으면 ts 가 null 이라 그 줄이 전부 맨 뒤로 몰리고
+    // --from/--to 도 안 먹는다 (시각 없는 줄은 통과가 규약이므로).
+    const ts = sniffTs(
+      '2026/09/28 07:02:04.648765  INFO [RTMPPUSH246] < R Handshake S0+S1. - client_session.go:333',
+    )
+    assert.equal(ts?.date.toISOString(), '2026-09-28T07:02:04.648Z')
+    assert.equal(ts?.nanos % 1_000_000n, 765_000n, '마이크로초가 보존되지 않았다')
+  })
+
+  it('하이픈 날짜도 그대로 읽는다', () => {
+    assert.equal(
+      sniffTs('2026-09-28 07:02:04.648765  INFO plain')?.date.toISOString(),
+      '2026-09-28T07:02:04.648Z',
+    )
+  })
+
+  it('시각처럼 보이는 게 없으면 null 이다', () => {
+    assert.equal(sniffTs('panic: runtime error: invalid memory address'), null)
   })
 })
