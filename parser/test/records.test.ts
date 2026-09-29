@@ -95,6 +95,18 @@ describe('Normalizer', () => {
     assert.equal(panic.msg, `panic: boom ${RID}`, '원본 줄이 메시지로 남아야 한다')
   })
 
+  it('JSON 이 아닌 줄도 제 시각을 읽으면 물려받지 않는다', () => {
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
+    n.push(lineEvent(`{"time":"2026-09-28T06:00:00.000000000Z","msg":"before","rid":"${RID}"}`))
+    const lal = n.push(
+      lineEvent('2026/09/28 07:02:04.648765  INFO [RTMPPUSH246] < R Handshake S0+S1.'),
+    )
+
+    assert.equal(lal.isJson, false)
+    assert.equal(lal.tsInherited, false, '제 시각을 읽었으면 직전 줄 시각을 쓰면 안 된다')
+    assert.equal(lal.ts?.date.toISOString(), '2026-09-28T07:02:04.648Z')
+  })
+
   it('스트림(호스트+파일)별로 seq 를 센다', () => {
     const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const a1 = n.push(lineEvent('x', { host: 'kw41' }))

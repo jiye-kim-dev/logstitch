@@ -250,6 +250,22 @@ func TestAwkTimeRangeBehavior(t *testing.T) {
 		}
 	})
 
+	t.Run("JSON 이 아닌 줄은 줄 맨 앞 시각으로 거른다", func(t *testing.T) {
+		// lal 계열 형식. 슬래시 날짜를 하이픈으로 안 바꾸면 '/'(0x2F) > '-'(0x2D)
+		// 라서 from 은 전부 통과하고 to 에서 전부 잘린다 — 경계가 통째로 뒤집힌다.
+		plainIn := `2026/09/04 02:19:24.648765  INFO [RTMPPUSH246] < R Handshake S0+S1.`
+		plainBefore := `2026/09/04 02:18:59.999999  INFO [RTMPPUSH245] < R Handshake S0+S1.`
+		plainAfter := `2026/09/04 02:21:00.000000  INFO [RTMPPUSH247] < R Handshake S0+S1.`
+		hyphen := `2026-09-04 02:19:30.000000  INFO plain with hyphen date`
+
+		got := runAwkTimeRange(t, "2026-09-04T02:19", "2026-09-04T02:20",
+			[]string{plainBefore, plainIn, hyphen, plainAfter})
+		if len(got) != 2 || !strings.Contains(got[0], "RTMPPUSH246") ||
+			!strings.Contains(got[1], "hyphen date") {
+			t.Errorf("비 JSON 줄의 범위 판정이 틀렸다: %v", got)
+		}
+	})
+
 	t.Run("확신 없는 줄은 통과한다", func(t *testing.T) {
 		// 잘못 버린 줄은 파서가 볼 기회가 없다. 시각을 못 읽으면 남긴다.
 		lenient := []string{
@@ -257,6 +273,10 @@ func TestAwkTimeRangeBehavior(t *testing.T) {
 			`{"timestamp":1788488369123,"msg":"epoch"}`,        // epoch 숫자 — 사전순 비교 불가
 			`{"time":"2026-09-04T11:19:24+09:00","msg":"kst"}`, // UTC 아닌 오프셋
 			`--`, // grep -A 구분선 (뒤 awk 가 버린다)
+			// 줄 맨 앞이 아닌 시각 — 오인해서 버리느니 통과시킨다.
+			`  at Worker.run (2026/09/04 02:30:00.000000)`,
+			// 비 JSON 인데 UTC 가 아닌 오프셋 (JSON 줄과 같은 규약).
+			`2026/09/04 11:19:24.000000 +09:00  INFO kst plain`,
 		}
 		got := runAwkTimeRange(t, "2026-09-04T02:19", "2026-09-04T02:20", lenient)
 		if len(got) != len(lenient) {

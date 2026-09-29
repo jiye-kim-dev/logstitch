@@ -94,9 +94,16 @@ export function mergeAliases(hint: ParserHint | undefined): FieldAliases {
   }
 }
 
-/** 줄 안에서 타임스탬프처럼 보이는 부분을 찾는다 (JSON 이 아닌 줄용). */
+/**
+ * 줄 안에서 타임스탬프처럼 보이는 부분을 찾는다 (JSON 이 아닌 줄용).
+ *
+ * 날짜 구분자로 슬래시도 받는다 — lal 계열이 "2026/09/28 07:02:04.648765"
+ * 로 찍는다. parseTs 에 넘기기 전에 하이픈으로 바꾼다 (ISO_RE 는 하이픈만
+ * 받고, 그 변환을 sniff 쪽에 두는 것은 JSON 필드값에는 이 표기가 관측되지
+ * 않았기 때문이다 — 나오면 그때 parseTs 로 내린다).
+ */
 const TS_SNIFF =
-  /(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?)/
+  /(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?)/
 
 const ISO_RE =
   /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2})?)(?:[.,](\d{1,9}))?\s*(Z|z|[+-]\d{2}:?\d{2})?)?$/
@@ -205,7 +212,7 @@ export function parseTs(value: unknown): Ts | null {
 /** JSON 이 아닌 줄에서 타임스탬프처럼 보이는 부분을 찾아 파싱한다. */
 export function sniffTs(line: string): Ts | null {
   const m = TS_SNIFF.exec(line)
-  return m ? parseTs(m[1]!) : null
+  return m ? parseTs(m[1]!.replace(/\//g, '-')) : null
 }
 
 /**
