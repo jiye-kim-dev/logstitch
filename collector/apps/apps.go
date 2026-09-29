@@ -32,8 +32,27 @@ type App struct {
 	// 통과 채널이다: 해석 없이 meta 이벤트에 그대로 실어 보낸다.
 	Parser json.RawMessage `json:"parser,omitempty"`
 
+	// Areas 는 특정 영역에만 다르게 적용할 규칙이다. 키는 인벤토리의 영역 이름.
+	Areas map[string]AreaRule `json:"areas,omitempty"`
+
 	// Note 는 사람을 위한 메모다. 코드는 쓰지 않는다.
 	Note string `json:"note,omitempty"`
+}
+
+// AreaRule 은 한 영역에만 적용할 검색 규칙이다.
+//
+// 같은 앱 안에서도 영역마다 로그 형태가 달라 공통 앵커가 안 통할 때가 있다
+// 또는 같은 앱 안에서
+// (JSON 로그에는 user_key 가 있지만 lal 계열 plain 로그에는 없다). 영역별로
+// 앵커를 갈라두면 앱을 쪼개지 않고 — view/parser 힌트를 그대로 상속한 채 —
+// 한 번의 조회에 함께 담을 수 있다.
+type AreaRule struct {
+	// Required 는 이 영역에서 쓸 검색 필드다. 앱 레벨 required 를 **대체**한다.
+	// (area 영역만의 required 필드 지정이라 이해해주면 됨)
+	//
+	// 마찬가지로 값을 안 주면 이 영역은 시간 범위로만 검색할거고, 최대 24H 이다.
+	// 빈 배열은 "이 영역은 늘 시간 범위로만" 이라는 뜻으로 유효하다.
+	Required []string `json:"required"`
 }
 
 type Config struct {
@@ -68,21 +87,56 @@ func Load(path string) (*Config, error) {
 					"       필수 필드가 없으면 어떤 값으로 검색할지 정할 수 없습니다",
 				path, name)
 		}
-		seen := make(map[string]bool, len(app.Required))
-		for _, field := range app.Required {
-			if strings.TrimSpace(field) == "" {
+		if err := validateFields(app.Required, path, fmt.Sprintf("앱 %q", name)); err != nil {
+			return nil, err
+		}
+
+		for area, rule := range app.Areas {
+			if strings.TrimSpace(area) == "" {
 				return nil, fmt.Errorf(
-					"[앱 설정 오류] %s: 앱 %q 의 required 에 빈 필드 이름이 있습니다", path, name)
+					"[앱 설정 오류] %s: 앱 %q 의 areas 에 빈 영역 이름이 있습니다", path, name)
 			}
-			if seen[field] {
-				return nil, fmt.Errorf(
-					"[앱 설정 오류] %s: 앱 %q 의 required 에 %q 가 두 번 있습니다",
-					path, name, field)
+			if err := validateFields(
+				rule.Required, path, fmt.Sprintf("앱 %q 의 영역 %q", name, area),
+			); err != nil {
+				return nil, err
 			}
-			seen[field] = true
 		}
 	}
 	return &cfg, nil
+}
+
+// validateFields 는 required 목록에 빈 이름이나 중복이 없는지 본다.
+// where 는 에러 메시지에 들어갈 위치 설명이다 (앱 레벨과 영역 레벨이 공유).
+func validateFields(fields []string, path, where string) error {
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		if strings.TrimSpace(field) == "" {
+			return fmt.Errorf(
+				"[앱 설정 오류] %s: %s 의 required 에 빈 필드 이름이 있습니다", path, where)
+		}
+		if seen[field] {
+			return fmt.Errorf(
+				"[앱 설정 오류] %s: %s 의 required 에 %q 가 두 번 있습니다", path, where, field)
+		}
+		seen[field] = true
+	}
+	return nil
+}
+
+// AreaFields 는 이 앱의 영역 규칙에 선언된 필드 전체를 모은다.
+//
+// 영역 전용 필드를 다른 영역의 추가 조건으로 붙이면 안 되기 때문에 필요하다
+// (main.orderCriteria 참고). 붙이면 --field sess=... 를 주는 순간 그 필드가
+// 없는 영역이 통째로 0줄이 된다 — 에러도 없이.
+func (a App) AreaFields() map[string]bool {
+	owned := make(map[string]bool)
+	for _, rule := range a.Areas {
+		for _, field := range rule.Required {
+			owned[field] = true
+		}
+	}
+	return owned
 }
 
 // Find 는 이름으로 앱을 찾는다.

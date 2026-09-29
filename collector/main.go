@@ -70,8 +70,15 @@ type request struct {
 	App           string
 	Env           string
 	// Criteria 는 검색 조건이다. 앱의 required 순서가 앞에 오고,
-	// 추가로 준 필드가 뒤에 붙는다.
+	// 추가로 준 필드가 뒤에 붙는다. 영역 규칙이 없는 영역이 이걸 쓴다.
 	Criteria []collect.Criterion
+	// AreaCriteria 는 영역별로 갈린 검색 조건이다 (apps.json 의 areas).
+	// 키가 있는 영역은 Criteria 대신 이걸 쓴다 — 합치지 않고 대체한다.
+	// 값이 안 들어온 영역은 빈 슬라이스가 되고, 그 영역은 시각 범위로만 긁는다.
+	AreaCriteria map[string][]collect.Criterion
+	// AreaRequired 는 영역 규칙이 선언한 필드 이름이다. 값이 안 들어왔을 때
+	// 무엇을 주면 그 영역을 좁힐 수 있는지 알려주는 데만 쓴다.
+	AreaRequired map[string][]string
 	// TimeFrom / TimeTo 는 --from/--to 를 정규화한 UTC 시각 문자열이다
 	// ("2026-09-04T02:19:24.5" 형태). 비어 있으면 그쪽 경계 없이 전체 검색.
 	TimeFrom string
@@ -235,6 +242,8 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 		return collect.Stats{}, err
 	}
 
+	warnUnknownAreas(os.Stderr, inv, req)
+
 	targets, areaOrder, err := buildTargets(inv, req)
 	if err != nil {
 		return collect.Stats{}, err
@@ -248,7 +257,7 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 		return collect.Stats{}, nil
 	}
 
-	stats := collect.Run(ctx, targets, req.Criteria, collect.Options{
+	stats := collect.Run(ctx, targets, metaCriteria(req, areaOrder), collect.Options{
 		App:         req.App,
 		Environment: req.Env,
 		SSHOpts:     inv.SSHOpts,
@@ -309,6 +318,12 @@ func buildRequest(
 	if err != nil {
 		return request{}, err
 	}
+	areaCriteria := make(map[string][]collect.Criterion, len(appDef.Areas))
+	areaRequired := make(map[string][]string, len(appDef.Areas))
+	for name, rule := range appDef.Areas {
+		areaCriteria[name] = pickAreaCriteria(rule, given)
+		areaRequired[name] = rule.Required
+	}
 	if after < 0 {
 		return request{}, fmt.Errorf("--after 는 0 이상이어야 합니다")
 	}
@@ -339,35 +354,14 @@ func buildRequest(
 		return request{}, fmt.Errorf("--from(%s) 이 --to(%s) 보다 뒤입니다", timeFrom, timeTo)
 	}
 
-	// apps.Load 가 required 를 비워두지 못하게 하므로 조건이 없다는 것은
-	// --no-required 로 검사를 끈 경우뿐이다. grep 앵커 없는 수집은 원격에서
-	// 파일 전 구간을 훑으므로, 시간 범위를 요구하고 24시간으로 제한한다.
-	if len(criteria) == 0 {
-		if timeFrom == "" {
-			return request{}, fmt.Errorf(
-				"검색 조건이 없습니다 — --no-required 로 조건 없이 조회하려면 --from 이 필요합니다\n"+
-					"       (범위는 24시간 이내. --to 를 생략하면 현재 시각까지로 계산합니다)\n"+
-					"       예: logstitch --app %s --env %s --no-required --from 2026-09-23T00:00 --to 2026-09-23T06:00",
-				app, env)
-		}
-		end := time.Now().UTC()
-		if timeTo != "" {
-			end = boundRangeEnd(timeTo)
-		}
-		if window := end.Sub(boundStart(timeFrom)); window > maxScanWindow {
-			return request{}, fmt.Errorf(
-				"조건 없는 조회의 시간 범위가 24시간을 넘습니다 (%.1f시간)\n"+
-					"       grep 없이 전 구간을 훑는 조회라 원격 부하를 막기 위해 24시간으로 제한합니다",
-				window.Hours())
-		}
-	}
-
 	return request{
 		AppsPath:      appsPath,
 		InventoryBase: inventoryBase,
 		App:           app,
 		Env:           env,
 		Criteria:      criteria,
+		AreaCriteria:  areaCriteria,
+		AreaRequired:  areaRequired,
 		TimeFrom:      timeFrom,
 		TimeTo:        timeTo,
 		View:          appDef.View,
@@ -419,6 +413,32 @@ func normalizeTimeBound(flagName, raw string) (string, error) {
 // maxScanWindow 는 조건(grep 앵커) 없는 조회에 허용하는 최대 시간 범위다.
 // 원격에서 파일 전 구간을 awk 로만 거르므로 범위가 부하의 유일한 상한이다.
 const maxScanWindow = 24 * time.Hour
+
+// requireScanWindow 는 grep 앵커 없는 조회에 시간 범위를 강제한다.
+//
+// 앵커가 없으면 원격에서 파일 전 구간을 훑으므로, --from 을 요구하고 범위를
+// 24시간으로 제한한다. 앱 전체에 조건이 없을 때(--no-required)와 특정 영역만
+// 앵커가 없을 때(apps.json 의 areas 규칙) 양쪽에서 같은 규약을 쓴다.
+//
+// what 은 무엇 때문에 앵커가 없는지, hint 는 어떻게 풀 수 있는지다.
+func requireScanWindow(what, hint, timeFrom, timeTo string) error {
+	if timeFrom == "" {
+		return fmt.Errorf("%s — %s\n"+
+			"       (범위는 24시간 이내. --to 를 생략하면 현재 시각까지로 계산합니다)",
+			what, hint)
+	}
+	end := time.Now().UTC()
+	if timeTo != "" {
+		end = boundRangeEnd(timeTo)
+	}
+	if window := end.Sub(boundStart(timeFrom)); window > maxScanWindow {
+		return fmt.Errorf(
+			"%s — 그런 조회의 시간 범위가 24시간을 넘습니다 (%.1f시간)\n"+
+				"       grep 없이 전 구간을 훑는 조회라 원격 부하를 막기 위해 24시간으로 제한합니다",
+			what, window.Hours())
+	}
+	return nil
+}
 
 // boundStart 는 정규화된 경계 문자열을 time.Time 으로 되돌린다.
 // normalizeTimeBound 를 통과한 값만 받으므로 파싱은 실패하지 않는다.
@@ -506,13 +526,16 @@ func orderCriteria(
 	}
 
 	// required 에 없는 필드는 선언 순서를 알 수 없으므로 준 순서대로 뒤에 붙인다.
+	// 단 영역 규칙에 선언된 필드는 뺀다 — 그 필드는 해당 영역 전용이라,
+	// 모든 영역에 교집합으로 붙이면 그 필드가 없는 영역이 통째로 0줄이 된다.
 	required := make(map[string]bool, len(def.Required))
 	for _, field := range def.Required {
 		required[field] = true
 	}
+	owned := def.AreaFields()
 	extra := make([]string, 0, len(given))
 	for field := range given {
-		if !required[field] {
+		if !required[field] && !owned[field] {
 			extra = append(extra, field)
 		}
 	}
@@ -522,6 +545,24 @@ func orderCriteria(
 	}
 
 	return criteria, nil
+}
+
+// pickAreaCriteria 는 영역 규칙(apps.json 의 areas)에 해당하는 조건을 고른다.
+//
+// 앱 레벨과 달리 빠진 필드를 오류로 만들지 않는다. 값을 안 주면 빈 조건이
+// 되고, 그 영역은 시각 범위로만 긁힌다 (buildTargets 가 범위를 요구한다).
+// 평소에는 앵커를 안 주고 필요할 때만 값을 줘서 그 영역을 켜는 쓰임이다.
+//
+// 규칙에 필드가 여럿인데 일부만 주면 준 것만 쓴다 — 앵커가 하나라도 있으면
+// 전 구간을 훑지 않으므로, 좁히려는 의도를 막을 이유가 없다.
+func pickAreaCriteria(rule apps.AreaRule, given map[string]string) []collect.Criterion {
+	out := make([]collect.Criterion, 0, len(rule.Required))
+	for _, field := range rule.Required {
+		if value, ok := given[field]; ok {
+			out = append(out, collect.Criterion{Field: field, Value: value})
+		}
+	}
+	return out
 }
 
 func exampleUsage(app string, required []string) string {
@@ -574,11 +615,43 @@ func buildTargets(inv *inventory.Inventory, req request) ([]collect.Target, []st
 
 	for _, area := range selected {
 		order = append(order, area.Name)
+
+		criteria, ruled := criteriaFor(req, area.Name)
+		values := collect.CriterionValues(criteria)
+
+		// 앵커 없는 영역은 원격에서 파일 전 구간을 훑으므로 시간 범위를
+		// 요구한다. 앱 전체에 조건이 없든(--no-required) 영역 규칙에 값이
+		// 안 들어왔든 규약은 같고, 안내만 갈린다.
+		//
+		// 이 판정은 반드시 여기서 해야 한다. buildRequest 는 인벤토리를 몰라
+		// --area 로 좁힌 결과를 볼 수 없어서, 앵커가 있는 영역만 남았는데도
+		// 범위를 요구하게 된다 (--area lal --no-required --field sess=... 이
+		// 막히던 경우).
+		if len(values) == 0 {
+			var hint string
+			if ruled {
+				hint = fmt.Sprintf("%s 중 하나를 --field 로 주거나 --from 으로 범위를 주세요\n"+
+					"       (이 영역은 apps.json 의 areas 규칙으로 앵커가 갈려 있습니다)",
+					strings.Join(req.AreaRequired[area.Name], ", "))
+			} else {
+				hint = fmt.Sprintf("--no-required 로 조건 없이 조회하려면 --from 이 필요합니다\n"+
+					"       예: logstitch --app %s --env %s --no-required --from 2026-09-23T00:00 --to 2026-09-23T06:00",
+					req.App, req.Env)
+			}
+			if err := requireScanWindow(
+				fmt.Sprintf("영역 %q 의 검색 조건이 없습니다", area.Name),
+				hint, req.TimeFrom, req.TimeTo,
+			); err != nil {
+				return nil, nil, err
+			}
+		}
+
 		for _, host := range area.Hosts {
 			targets = append(targets, collect.Target{
 				Area:    area.Name,
 				Host:    host,
 				Sources: area.Sources,
+				Values:  values,
 			})
 		}
 	}
@@ -586,19 +659,81 @@ func buildTargets(inv *inventory.Inventory, req request) ([]collect.Target, []st
 	return targets, order, nil
 }
 
+// warnUnknownAreas 는 apps.json 의 areas 에 선언됐지만 이 인벤토리에 없는
+// 영역을 알린다.
+//
+// 이름이 어긋나면 그 규칙이 조용히 안 쓰이고 그 영역은 앱 레벨 앵커로 조회된다
+// — 그 영역 로그에 없는 값이라 0줄이 나오는데 에러도 안 난다. 오타가 제일
+// 비싼 실패가 되는 자리라 소리를 낸다.
+//
+// 막지는 않는다. 환경마다 영역 구성이 다를 수 있어서 (prod 에만 있는 영역을
+// apps.json 에 적어둔 경우) 에러로 만들면 정상 조회가 깨진다.
+//
+// --area 로 좁힌 결과가 아니라 인벤토리 전체와 비교해야 한다. 선택된 영역만
+// 보면 --area forwarder 로 돌릴 때마다 lal 이 없다고 잘못 알린다.
+func warnUnknownAreas(w io.Writer, inv *inventory.Inventory, req request) {
+	if len(req.AreaRequired) == 0 {
+		return
+	}
+	known := make(map[string]bool, len(inv.Areas))
+	for _, name := range inv.Names() {
+		known[name] = true
+	}
+	missing := make([]string, 0, len(req.AreaRequired))
+	for name := range req.AreaRequired {
+		if !known[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	// map 순회 순서는 실행마다 다르다. 메시지가 흔들리지 않게 정렬한다.
+	sortStrings(missing)
+	fmt.Fprintf(w,
+		"[경고] apps.json 의 areas 에 선언된 영역이 이 인벤토리에 없습니다: %s\n"+
+			"       (이름이 어긋나면 그 규칙이 안 쓰이고 그 영역은 앱 레벨 앵커로 조회됩니다)\n",
+		strings.Join(missing, ", "))
+}
+
+// criteriaFor 는 영역에 적용할 검색 조건을 고른다.
+//
+// 영역 규칙(apps.json 의 areas)이 있으면 그걸 쓰고, 없으면 앱 레벨을 쓴다.
+// 두 번째 반환값은 영역 규칙이 적용됐는지다 — 조건이 비었을 때 그게 규칙
+// 때문인지(값 미제공) 앱 전체가 비어서인지(--no-required) 가르는 데 쓴다.
+func criteriaFor(req request, area string) ([]collect.Criterion, bool) {
+	if criteria, ok := req.AreaCriteria[area]; ok {
+		return criteria, true
+	}
+	return req.Criteria, false
+}
+
+// metaCriteria 는 meta 이벤트에 실을 조건 목록이다.
+//
+// 영역마다 조건이 갈릴 수 있으므로 합집합을 싣는다 — 파서는 이걸 헤더에
+// 보여주고 첫 항목으로 매칭 종류를 판정한다. 앱 레벨을 앞에 두어 주 식별자가
+// 영역 규칙 때문에 바뀌지 않게 한다.
+func metaCriteria(req request, areaOrder []string) []collect.Criterion {
+	out := make([]collect.Criterion, 0, len(req.Criteria)+len(req.AreaCriteria))
+	seen := make(map[string]bool, cap(out))
+	for _, c := range req.Criteria {
+		out = append(out, c)
+		seen[c.Field] = true
+	}
+	for _, name := range areaOrder {
+		for _, c := range req.AreaCriteria[name] {
+			if !seen[c.Field] {
+				out = append(out, c)
+				seen[c.Field] = true
+			}
+		}
+	}
+	return out
+}
+
 // printDryRun 은 접속 없이 원격에 넘길 스크립트를 보여준다.
 // 같은 (영역, 소스) 조합은 호스트마다 스크립트가 동일하므로 한 번만 찍는다.
 func printDryRun(out io.Writer, targets []collect.Target, req request) {
-	criteria := make([]string, 0, len(req.Criteria))
-	searchValues := make([]string, 0, len(req.Criteria))
-	for _, c := range req.Criteria {
-		criteria = append(criteria, c.Field+"="+c.Value)
-		searchValues = append(searchValues, c.Value)
-	}
-	if req.TimeFrom != "" || req.TimeTo != "" {
-		criteria = append(criteria, fmt.Sprintf("time=[%s~%s]", req.TimeFrom, req.TimeTo))
-	}
-
 	shown := make(map[string]bool)
 	for _, t := range targets {
 		names := make([]string, 0, len(t.Sources))
@@ -611,10 +746,20 @@ func printDryRun(out io.Writer, targets []collect.Target, req request) {
 		}
 		shown[key] = true
 
+		// 조건은 영역마다 다를 수 있으므로 (apps.json 의 areas) 타깃 기준으로 만든다.
+		areaCriteria, _ := criteriaFor(req, t.Area)
+		label := make([]string, 0, len(areaCriteria)+1)
+		for _, c := range areaCriteria {
+			label = append(label, c.Field+"="+c.Value)
+		}
+		if req.TimeFrom != "" || req.TimeTo != "" {
+			label = append(label, fmt.Sprintf("time=[%s~%s]", req.TimeFrom, req.TimeTo))
+		}
+
 		fmt.Fprintf(out, "\n===== %s/%s %s / %v (%s) — 예: ssh %s 'bash -s' =====\n",
-			req.App, req.Env, t.Area, names, strings.Join(criteria, " "), t.Host)
+			req.App, req.Env, t.Area, names, strings.Join(label, " "), t.Host)
 		fmt.Fprint(out, remote.BuildScript(t.Sources, remote.Query{
-			Values:   searchValues,
+			Values:   t.Values,
 			After:    req.After,
 			TimeFrom: req.TimeFrom,
 			TimeTo:   req.TimeTo,

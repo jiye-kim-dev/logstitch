@@ -25,11 +25,16 @@ import (
 	"github.com/jiye-kim-dev/logstitch/collector/remote"
 )
 
-// Target 은 "이 호스트에서 이 소스들을 긁는다" 한 건이다.
+// Target 은 "이 호스트에서 이 소스들을 이 값으로 긁는다" 한 건이다.
 type Target struct {
 	Area    string
 	Host    string
 	Sources []inventory.Source
+
+	// Values 는 이 타깃에서 쓸 grep 교집합 값이다. 영역마다 다를 수 있어서
+	// (apps.json 의 areas 규칙) 공통이 아니라 타깃에 실린다.
+	// 비어 있으면 시각 범위로만 긁는다 — 호출부가 범위를 요구한다.
+	Values []string
 }
 
 // Criterion : and 조건으로 필터링 주고 싶을때
@@ -38,7 +43,9 @@ type Criterion struct {
 	Value string `json:"value"`
 }
 
-func values(criteria []Criterion) []string {
+// CriterionValues 는 조건에서 검색값만 뽑는다. 원격 grep 에는 값만 나가고
+// 필드 이름은 파서가 매칭 종류를 판정할 때만 쓴다.
+func CriterionValues(criteria []Criterion) []string {
 	out := make([]string, 0, len(criteria))
 	for _, c := range criteria {
 		out = append(out, c.Value)
@@ -181,8 +188,6 @@ func Run(
 		workers = min(16, max(4, len(targets)))
 	}
 
-	searchValues := values(criteria)
-
 	jobs := make(chan Target)
 	var wg sync.WaitGroup
 	for range workers {
@@ -190,7 +195,7 @@ func Run(
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				runOne(ctx, t, searchValues, opt, events)
+				runOne(ctx, t, opt, events)
 			}
 		}()
 	}
@@ -205,9 +210,9 @@ func Run(
 	return stats
 }
 
-func runOne(ctx context.Context, t Target, searchValues []string, opt Options, events chan<- any) {
+func runOne(ctx context.Context, t Target, opt Options, events chan<- any) {
 	script := remote.BuildScript(t.Sources, remote.Query{
-		Values:   searchValues,
+		Values:   t.Values,
 		After:    opt.After,
 		TimeFrom: opt.TimeFrom,
 		TimeTo:   opt.TimeTo,

@@ -108,3 +108,33 @@ func TestLoadMissingFileExplains(t *testing.T) {
 		t.Errorf("에러가 파일 형태를 알려주지 않는다: %v", err)
 	}
 }
+
+func TestLoadAreaRules(t *testing.T) {
+	t.Run("영역 규칙을 읽고 선언된 필드를 모은다", func(t *testing.T) {
+		path := write(t, `{"apps":{"fw":{"required":["rid"],
+			"areas":{"lal":{"required":["sess"]},"edge":{"required":[]}}}}}`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("로드 실패: %v", err)
+		}
+		app, _ := cfg.Find("fw")
+		if got := app.Areas["lal"].Required; len(got) != 1 || got[0] != "sess" {
+			t.Errorf("lal 규칙이 %v", got)
+		}
+		// 빈 배열은 "늘 시간 범위로만" 이라는 뜻으로 유효하다.
+		if _, ok := app.Areas["edge"]; !ok {
+			t.Error("required 가 빈 영역 규칙이 사라졌다")
+		}
+		if owned := app.AreaFields(); !owned["sess"] || len(owned) != 1 {
+			t.Errorf("영역 전용 필드 집합이 %v", owned)
+		}
+	})
+
+	t.Run("영역 규칙의 required 도 앱 레벨과 같은 규칙으로 검증한다", func(t *testing.T) {
+		path := write(t, `{"apps":{"fw":{"required":["rid"],
+			"areas":{"lal":{"required":["sess","sess"]}}}}}`)
+		if _, err := Load(path); err == nil {
+			t.Fatal("중복 필드가 통과했다")
+		}
+	})
+}

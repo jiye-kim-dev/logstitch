@@ -10,7 +10,16 @@
     },
     "split": {
       "required": ["user_key"],
-      "view": { "default": "contention", "lane": "server_id", "session": "trace_id", "laneFallback": "source" }
+      "view": { "default": "contention", "lane": "server_id", "session": "trace_id", "laneFallback": "source" },
+      "_comment": [
+        "areas: 영역마다 로그 형태가 달라 공통 앵커가 안 통할 때 그 영역만 다른 필드로 검색한다.",
+        "아래 lal 영역은 JSON 이 아닌 plain 로그라 user_key 가 없다.",
+        "--field sess=<값> 을 주면 그 값으로 grep 하고, 안 주면 --from/--to 범위로만 긁는다.",
+        "sess 는 다른 영역의 교집합 조건으로는 붙지 않는다 — 붙으면 그 영역이 0줄이 된다."
+      ],
+      "areas": {
+        "small": { "required": ["sess"] }
+      }
     }
   }
 }

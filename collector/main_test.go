@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jiye-kim-dev/logstitch/collector/apps"
+	"github.com/jiye-kim-dev/logstitch/collector/collect"
+	"github.com/jiye-kim-dev/logstitch/collector/inventory"
 )
 
 // testApps 는 두 종류의 앱을 흉내낸다 — 필수 필드 하나, 그리고 셋.
@@ -14,7 +17,32 @@ var testApps = &apps.Config{
 	Apps: map[string]apps.App{
 		"ai-stt":    {Required: []string{"rid"}},
 		"forwarder": {Required: []string{"stream_key", "session_id", "node_id"}},
+		// 영역마다 앵커가 갈리는 앱 — JSON 로그는 rid, lal 영역은 plain 이라 sess.
+		"mixed": {
+			Required: []string{"rid"},
+			Areas:    map[string]apps.AreaRule{"lal": {Required: []string{"sess"}}},
+		},
 	},
+}
+
+// mixedInventory 는 앵커가 갈리는 앱의 인벤토리다 (영역 둘, 호스트 하나씩).
+func mixedInventory() *inventory.Inventory {
+	src := func(name string) []inventory.Source {
+		return []inventory.Source{{Name: name, Paths: []string{"/var/log/" + name + "/*.log"}}}
+	}
+	return &inventory.Inventory{Areas: []inventory.Area{
+		{Name: "api", Hosts: []string{"h1"}, Sources: src("api")},
+		{Name: "lal", Hosts: []string{"h1"}, Sources: src("lal")},
+	}}
+}
+
+// valuesByArea 는 타깃을 영역별 검색값으로 접는다 (같은 영역은 값이 같다).
+func valuesByArea(targets []collect.Target) map[string]string {
+	out := make(map[string]string, len(targets))
+	for _, t := range targets {
+		out[t.Area] = strings.Join(t.Values, "|")
+	}
+	return out
 }
 
 type args struct {
@@ -24,6 +52,7 @@ type args struct {
 	from       string
 	to         string
 	fields     stringList
+	areas      stringList
 	after      int
 	noRequired bool
 }
@@ -32,8 +61,23 @@ func build(t *testing.T, a args) (request, error) {
 	t.Helper()
 	timeout := 90
 	return buildRequest(testApps, "apps.json", "inventory",
-		a.app, a.env, a.rid, a.from, a.to, a.fields, nil, a.after, timeout, 0, 0,
+		a.app, a.env, a.rid, a.from, a.to, a.fields, a.areas, a.after, timeout, 0, 0,
 		a.noRequired, false)
+}
+
+// buildAll 은 요청 조립부터 타깃 확정까지 돈다.
+//
+// 앵커 없는 조회의 시간 범위 검사는 buildTargets 에서 일어난다 — 실제 조회
+// 대상 영역이 거기서야 정해지기 때문이다 (--area 로 좁히면 앵커 있는 영역만
+// 남을 수 있다). 그 규약을 보는 테스트는 여기까지 돌려야 한다.
+func buildAll(t *testing.T, a args) (request, error) {
+	t.Helper()
+	req, err := build(t, a)
+	if err != nil {
+		return req, err
+	}
+	_, _, err = buildTargets(mixedInventory(), req)
+	return req, err
 }
 
 func criteriaOf(req request) []string {
@@ -228,7 +272,7 @@ func TestNoRequired(t *testing.T) {
 	})
 
 	t.Run("조건도 시간 범위도 없으면 여전히 거부", func(t *testing.T) {
-		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true})
+		_, err := buildAll(t, args{app: "ai-stt", env: "prod", noRequired: true})
 		if err == nil {
 			t.Fatal("--no-required 로 조건 없이 통과했다 — 로그 전체를 긁게 된다")
 		}
@@ -356,7 +400,7 @@ func TestTimeRangeValidation(t *testing.T) {
 func TestNoCriteriaTimeRange(t *testing.T) {
 	t.Run("24시간 이내 범위면 조건 없이 통과", func(t *testing.T) {
 		// --to 2026-09-04 는 그날 전체 → 정확히 24시간이므로 허용 경계다.
-		req, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+		req, err := buildAll(t, args{app: "ai-stt", env: "prod", noRequired: true,
 			from: "2026-09-04T00:00", to: "2026-09-04"})
 		if err != nil {
 			t.Fatalf("24시간 범위가 거부됐다: %v", err)
@@ -367,7 +411,7 @@ func TestNoCriteriaTimeRange(t *testing.T) {
 	})
 
 	t.Run("24시간 초과면 거부", func(t *testing.T) {
-		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+		_, err := buildAll(t, args{app: "ai-stt", env: "prod", noRequired: true,
 			from: "2026-09-04", to: "2026-09-05"})
 		if err == nil {
 			t.Fatal("48시간 범위가 통과했다")
@@ -379,7 +423,7 @@ func TestNoCriteriaTimeRange(t *testing.T) {
 
 	t.Run("to 를 생략하면 현재 시각까지로 계산한다", func(t *testing.T) {
 		// 먼 과거의 from 은 현재까지 24시간을 넘으므로 거부된다.
-		_, err := build(t, args{app: "ai-stt", env: "prod", noRequired: true,
+		_, err := buildAll(t, args{app: "ai-stt", env: "prod", noRequired: true,
 			from: "2026-09-04"})
 		if err == nil {
 			t.Fatal("과거 from + to 생략이 통과했다")
@@ -388,7 +432,7 @@ func TestNoCriteriaTimeRange(t *testing.T) {
 
 	t.Run("조건이 있으면 24시간 제한을 받지 않는다", func(t *testing.T) {
 		// grep 앵커가 있으면 원격 전송량이 이미 좁혀지므로 제한 대상이 아니다.
-		_, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc",
+		_, err := buildAll(t, args{app: "ai-stt", env: "prod", rid: "abc",
 			from: "2026-09-01", to: "2026-09-10"})
 		if err != nil {
 			t.Errorf("조건 있는 넓은 범위가 거부됐다: %v", err)
@@ -436,4 +480,153 @@ func TestAfterConflictsWithMultipleFields(t *testing.T) {
 	if _, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc", after: 20}); err != nil {
 		t.Errorf("조건이 하나인데 --after 가 거부됐다: %v", err)
 	}
+}
+
+// TestAreaRules 는 apps.json 의 areas 규칙이 영역별로 앵커를 가르는지 고정한다.
+//
+// 가장 중요한 것은 "영역 전용 필드가 다른 영역에 교집합으로 안 붙는다" 이다.
+// 붙으면 그 필드가 없는 영역이 통째로 0줄이 되는데 에러도 안 난다.
+func TestAreaRules(t *testing.T) {
+	t.Run("영역 전용 필드는 다른 영역의 추가 조건이 되지 않는다", func(t *testing.T) {
+		req, err := build(t, args{
+			app: "mixed", env: "prod", rid: "abc",
+			fields: stringList{"sess=RTMPPUSH246"},
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		// 앱 레벨에는 rid 만 — sess 가 여기 끼면 api 영역이 0줄이 된다.
+		if got := criteriaOf(req); strings.Join(got, ",") != "rid=abc" {
+			t.Errorf("앱 레벨 조건이 %v (기대 [rid=abc])", got)
+		}
+		lal := req.AreaCriteria["lal"]
+		if len(lal) != 1 || lal[0].Field != "sess" || lal[0].Value != "RTMPPUSH246" {
+			t.Errorf("lal 영역 조건이 %v", lal)
+		}
+
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatalf("buildTargets 실패: %v", err)
+		}
+		got := valuesByArea(targets)
+		if got["api"] != "abc" || got["lal"] != "RTMPPUSH246" {
+			t.Errorf("영역별 검색값이 %v (기대 api=abc, lal=RTMPPUSH246)", got)
+		}
+	})
+
+	t.Run("값을 안 주면 그 영역은 시간 범위로만 긁는다", func(t *testing.T) {
+		req, err := build(t, args{
+			app: "mixed", env: "prod", rid: "abc",
+			from: "2026-09-28T07:00", to: "2026-09-28T08:00",
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatalf("buildTargets 실패: %v", err)
+		}
+		if got := valuesByArea(targets); got["api"] != "abc" || got["lal"] != "" {
+			t.Errorf("영역별 검색값이 %v (기대 api=abc, lal=앵커 없음)", got)
+		}
+	})
+
+	t.Run("값도 범위도 없으면 무엇을 주면 되는지 알려준다", func(t *testing.T) {
+		req, err := build(t, args{app: "mixed", env: "prod", rid: "abc"})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		_, _, err = buildTargets(mixedInventory(), req)
+		if err == nil {
+			t.Fatal("앵커도 범위도 없는 영역이 통과했다 — 원격에서 전 구간을 훑는다")
+		}
+		for _, want := range []string{"lal", "sess", "--from"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("에러에 %q 가 없다: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("--area 로 앵커 있는 영역만 남으면 범위 없이도 통과한다", func(t *testing.T) {
+		// 검사를 buildRequest 에서 하면 여기서 막힌다 — 거기서는 인벤토리를
+		// 몰라 --area 로 무엇이 남는지 볼 수 없고, 앱 레벨 조건이 비었다는
+		// 것만 보고 --from 을 요구하게 된다.
+		req, err := build(t, args{
+			app: "mixed", env: "prod", noRequired: true,
+			areas: stringList{"lal"}, fields: stringList{"sess=RTMPPUSH246"},
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatalf("앵커(sess)가 있는데 거부됐다: %v", err)
+		}
+		if got := valuesByArea(targets); len(got) != 1 || got["lal"] != "RTMPPUSH246" {
+			t.Errorf("타깃이 %v (기대 lal=RTMPPUSH246 하나)", got)
+		}
+	})
+
+	t.Run("영역 규칙이 없는 앱은 동작이 그대로다", func(t *testing.T) {
+		req, err := build(t, args{app: "ai-stt", env: "prod", rid: "abc"})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatalf("buildTargets 실패: %v", err)
+		}
+		if got := valuesByArea(targets); got["api"] != "abc" || got["lal"] != "abc" {
+			t.Errorf("모든 영역이 앱 레벨 조건을 써야 한다: %v", got)
+		}
+	})
+}
+
+// TestWarnUnknownAreas 는 apps.json 의 영역 이름이 인벤토리와 어긋났을 때
+// 소리를 내는지 고정한다. 조용히 넘어가면 그 영역이 앱 레벨 앵커로 조회되어
+// 0줄이 나오는데, 에러가 없어서 "그 시간대에 로그가 없었다" 로 읽힌다.
+func TestWarnUnknownAreas(t *testing.T) {
+	req, err := build(t, args{
+		app: "mixed", env: "prod", rid: "abc", fields: stringList{"sess=RTMPPUSH246"},
+	})
+	if err != nil {
+		t.Fatalf("예상치 못한 오류: %v", err)
+	}
+
+	warn := func(inv *inventory.Inventory, r request) string {
+		var buf bytes.Buffer
+		warnUnknownAreas(&buf, inv, r)
+		return buf.String()
+	}
+
+	t.Run("인벤토리에 없는 영역은 알린다", func(t *testing.T) {
+		onlyAPI := &inventory.Inventory{Areas: []inventory.Area{{
+			Name: "api", Hosts: []string{"h1"},
+			Sources: []inventory.Source{{Name: "api", Paths: []string{"/var/log/api/*.log"}}},
+		}}}
+		got := warn(onlyAPI, req)
+		if !strings.Contains(got, "lal") {
+			t.Errorf("없는 영역(lal)을 알리지 않았다: %q", got)
+		}
+	})
+
+	t.Run("이름이 맞으면 조용하다", func(t *testing.T) {
+		if got := warn(mixedInventory(), req); got != "" {
+			t.Errorf("정상인데 경고가 났다: %q", got)
+		}
+	})
+
+	t.Run("--area 로 좁혀도 잘못 알리지 않는다", func(t *testing.T) {
+		// 선택된 영역이 아니라 인벤토리 전체와 비교해야 한다. 안 그러면
+		// --area api 로 돌릴 때마다 lal 이 없다고 알리게 된다.
+		narrowed, err := build(t, args{
+			app: "mixed", env: "prod", rid: "abc", areas: stringList{"api"},
+		})
+		if err != nil {
+			t.Fatalf("예상치 못한 오류: %v", err)
+		}
+		if got := warn(mixedInventory(), narrowed); got != "" {
+			t.Errorf("--area 로 좁혔을 뿐인데 경고가 났다: %q", got)
+		}
+	})
 }

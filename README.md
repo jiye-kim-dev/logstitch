@@ -148,6 +148,44 @@ Host req-* sch-* rcv-*
 **`required` 는 순서가 의미를 가진다.** 원격에서 grep 을 이 순서로 이어붙이므로,
 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
 
+**영역마다 앵커가 다르면 `areas` 로 가른다.** 같은 앱 안에서도 모듈에 따라 로그
+형태가 달라 공통 필드가 안 통할 때가 있다 (JSON 로그에는 `user_key` 가 있지만
+lal 계열 plain 로그에는 없는 경우).
+
+```json
+{
+  "apps": {
+    "app-01": {
+      "required": ["user_key", "trace_id"],
+      "areas": { "lal": { "required": ["sess"] } }
+    }
+  }
+}
+```
+
+`areas` 의 `required` 는 앱 레벨을 **대체한다** (합치지 않는다 — 합치면 그 영역
+로그에 없는 필드가 grep 교집합에 남아 항상 0줄이 된다). 앱 레벨과 달리 강제가
+아니어서, 값을 안 주면 그 영역은 시간 범위로만 긁는다.
+
+```sh
+# lal 은 앵커 없이 범위로만 (--from 필요, 24시간 제한)
+$LS --field user_key=U --field trace_id=T --from 2026-09-28T07:00 --to 2026-09-28T08:00
+
+# --field sess= 를 주면 그때만 lal 이 그 값으로 좁혀진다
+$LS --field user_key=U --field trace_id=T --field sess=RTMPPUSH246
+```
+
+앱을 쪼개는 것과 달리 `view` / `parser` 힌트를 그대로 상속하므로, 한 번의 조회에
+레인만 하나 늘어난다.
+
+`areas` 의 키는 **인벤토리의 영역 이름과 정확히 같아야 한다.** 어긋나면 그 규칙이
+안 쓰이고 그 영역이 앱 레벨 앵커로 조회되어 조용히 0줄이 나오므로, 이름이 안 맞으면
+경고를 낸다 (환경마다 영역 구성이 다를 수 있어 막지는 않는다).
+
+규칙은 **영역 단위**다. 한 영역 안의 소스들은 모두 같은 앵커를 받으므로, 형태가
+다른 로그는 같은 영역의 `sources` 에 넣지 말고 별도 영역으로 나눠야 한다
+(같은 호스트를 두 영역에 써도 된다).
+
 apps.json 과 인벤토리 모두 JSON Schema 가 있다 (`schemas/`). 파일 맨 위에
 `"$schema": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/apps.schema.json"`
 을 넣으면 IDE 가 자동완성·오타 검증을 해준다 (인벤토리는 `inventory.schema.json`).
@@ -257,6 +295,7 @@ logstitch --app forwarder --env prod \
 ```
 
 `required` 밖의 필드를 더 주면 **추가 교집합 조건**으로 붙는다 (임시 조회용).
+단 `areas` 규칙에 선언된 필드는 예외다 — 그 영역에만 쓰이고 다른 영역에는 안 붙는다.
 
 ```sh
 $LS --rid abc123 --field cpk=tenant-a | logstitch-parse
