@@ -10,6 +10,7 @@ import {
   parseTs,
   pick,
   rangeEndNanos,
+  sniffLevel,
   sniffTs,
   stripVolatile,
 } from '../src/fields.ts'
@@ -216,5 +217,31 @@ describe('sniffTs', () => {
 
   it('시각처럼 보이는 게 없으면 null 이다', () => {
     assert.equal(sniffTs('panic: runtime error: invalid memory address'), null)
+  })
+})
+
+describe('sniffLevel', () => {
+  it('plain 줄의 레벨을 잡는다', () => {
+    assert.equal(
+      sniffLevel('2026/09/28 07:02:05.100000  ERROR [RTMPPUSH246] connect failed'),
+      'ERROR',
+    )
+    assert.equal(sniffLevel('2026/09/28 07:02:04.648765  INFO [RTMPPUSH246] < R'), 'INFO')
+  })
+
+  it('소문자는 안 잡는다 — 메시지 본문의 단어와 구분할 수 없다', () => {
+    assert.equal(sniffLevel('2026/09/28 07:02:05  retrying after error response'), '')
+  })
+
+  it('레벨은 앞쪽에 오므로 첫 매치를 쓴다', () => {
+    assert.equal(sniffLevel('07:02:05 INFO handler returned ERROR to client'), 'INFO')
+  })
+
+  it('Go 의 panic 은 소문자로 줄 맨 앞에 온다', () => {
+    assert.equal(sniffLevel('panic: runtime error: invalid memory address'), 'PANIC')
+  })
+
+  it('WARNING 을 WARN 으로 자르지 않는다 (색 표에 둘 다 있다)', () => {
+    assert.equal(sniffLevel('2026/09/28 07:02:05  WARNING disk almost full'), 'WARNING')
   })
 })

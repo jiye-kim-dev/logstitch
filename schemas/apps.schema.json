@@ -37,11 +37,31 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "areas": {
+          "type": "object",
+          "description": "특정 영역에만 다르게 적용할 검색 규칙. 키는 인벤토리의 영역 이름. 같은 앱 안에서 영역마다 로그 형태가 달라 공통 앵커가 안 통할 때 쓴다 (JSON 로그에는 user_key 가 있지만 lal 계열 plain 로그에는 없는 경우). 앱을 쪼개지 않으므로 view/parser 힌트를 그대로 상속한다.",
+          "additionalProperties": { "$ref": "#/definitions/areaRule" },
+          "propertyNames": { "minLength": 1 }
+        },
         "view": { "$ref": "#/definitions/viewHint" },
         "parser": { "$ref": "#/definitions/parserHint" },
         "note": {
           "type": "string",
           "description": "사람용 메모. 코드는 쓰지 않는다."
+        }
+      }
+    },
+    "areaRule": {
+      "type": "object",
+      "required": ["required"],
+      "additionalProperties": false,
+      "properties": {
+        "_comment": { "$ref": "#/definitions/comment" },
+        "required": {
+          "type": "array",
+          "description": "이 영역에서 쓸 검색 필드. 앱 레벨 required 를 대체한다 (합치지 않는다 — 합치면 그 영역 로그에 없는 필드가 grep 교집합에 남아 항상 0줄이 된다). 앱 레벨과 달리 강제가 아니다: 값을 안 주면 그 영역은 시간 범위로만 긁고 (--from 필요, 24시간 제한), 빈 배열은 \"늘 시간 범위로만\" 이라는 뜻이다.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
         }
       }
     },

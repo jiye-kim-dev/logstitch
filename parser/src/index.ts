@@ -22,6 +22,7 @@ export {
   parseParserHint,
   parseTs,
   pick,
+  sniffLevel,
   sniffTs,
   stripVolatile,
 } from './fields.ts'

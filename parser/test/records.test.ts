@@ -107,6 +107,25 @@ describe('Normalizer', () => {
     assert.equal(lal.ts?.date.toISOString(), '2026-09-28T07:02:04.648Z')
   })
 
+  it('JSON 이 아닌 줄의 레벨을 줄에서 읽어 장애 줄을 살린다', () => {
+    // level 이 비면 classifyGeneric 이 info 로 분류하고 색도 안 붙는다.
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
+    const lal = n.push(
+      lineEvent('2026/09/28 07:02:05.100000  ERROR [RTMPPUSH246] connect failed'),
+    )
+    assert.equal(lal.level, 'ERROR')
+  })
+
+  it('JSON 줄에는 레벨 추측을 쓰지 않는다', () => {
+    // 메시지 본문의 대문자 토큰을 레벨로 오인하면 멀쩡한 줄이 빨개진다.
+    const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
+    const rec = n.push(
+      lineEvent('{"time":"2026-09-28T07:02:05.000000000Z","msg":"retry after ERROR response"}'),
+    )
+    assert.equal(rec.isJson, true)
+    assert.equal(rec.level, '')
+  })
+
   it('스트림(호스트+파일)별로 seq 를 센다', () => {
     const n = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: RID })
     const a1 = n.push(lineEvent('x', { host: 'kw41' }))

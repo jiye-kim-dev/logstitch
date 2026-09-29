@@ -216,6 +216,31 @@ export function sniffTs(line: string): Ts | null {
 }
 
 /**
+ * JSON 이 아닌 줄에서 로그 레벨로 보이는 토큰을 찾는다.
+ *
+ * **대문자만** 잡는 것이 핵심이다. 'error' 같은 단어는 메시지 본문에 흔해서
+ * 대소문자를 무시하면 "retrying after error" 가 ERROR 줄이 된다. plain 로그의
+ * 레벨 표기는 관례적으로 대문자라 이걸로 충분하다.
+ *
+ * 첫 매치를 쓴다. 레벨은 보통 줄 앞쪽에 오므로 "INFO handler returned ERROR"
+ * 같은 줄에서도 INFO 가 먼저 잡힌다.
+ *
+ * Go 의 panic 은 소문자로 줄 맨 앞에 오므로 따로 본다 — 장애 시점에 제일
+ * 보고 싶은 줄이라 놓치면 손해가 크다.
+ *
+ * WARNING 을 WARN 보다 앞에 둔다. 값은 정규화하지 않고 그대로 돌려준다 —
+ * render.ts 의 LEVEL_COLORS 가 WARN/WARNING 을 둘 다 키로 갖는다.
+ */
+const LEVEL_SNIFF =
+  /\b(TRACE|DEBUG|INFO|NOTICE|WARNING|WARN|ERROR|FATAL|CRITICAL|PANIC)\b/
+
+export function sniffLevel(line: string): string {
+  if (line.startsWith('panic:')) return 'PANIC'
+  const m = LEVEL_SNIFF.exec(line)
+  return m ? m[1]! : ''
+}
+
+/**
  * 범위 상한(--to)의 배타적 끝 나노초.
  *
  * "그 시각 이하"가 아니라 "준 정밀도의 구간 끝까지"다 — --to 2026-09-04 는
