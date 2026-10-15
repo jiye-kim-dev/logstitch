@@ -82,6 +82,7 @@ type MetaEvent struct {
 
 // LineEvent 는 원격에서 grep 에 걸린 로그 한 줄이다.
 // Line 은 불투명한 문자열로, 수집기는 그 내용을 해석하지 않는다.
+// 예외는 하나 — Options.Redactor 가 있으면 민감 값을 가린 뒤에 싣는다.
 type LineEvent struct {
 	Type   string `json:"type"` // "line"
 	Area   string `json:"area"`
@@ -118,6 +119,7 @@ type Options struct {
 	Parser      json.RawMessage // 앱 설정의 필드 별칭 힌트. 해석 없이 meta 로 전달.
 	TimeFrom    string          // 정규화된 UTC 시각 하한. 비면 없음. 원격 프리필터 + meta 전달.
 	TimeTo      string          // 정규화된 UTC 시각 상한 (준 정밀도 구간 끝까지 포함). 비면 없음.
+	Redactor    *Redactor       // 앱 설정의 민감 값 가림 규칙. nil 이면 원문 그대로.
 }
 
 // Stats 는 종료 코드 결정에 쓸 최소한의 집계다.
@@ -271,7 +273,7 @@ func runOne(ctx context.Context, t Target, opt Options, events chan<- any) {
 					Host:   t.Host,
 					Source: source,
 					File:   file,
-					Line:   raw,
+					Line:   opt.Redactor.Apply(raw),
 				}
 				emitted++
 			}

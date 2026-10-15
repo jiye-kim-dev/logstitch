@@ -61,7 +61,7 @@ export XDG_STATE_HOME="$(mktemp -d)"
 RAW="$(mktemp)"
 OUT="$(mktemp)"
 CFG_HOME="$(mktemp -d)"
-trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.xdg" "$OUT.bundle" "$OUT.err"; rm -rf "$XDG_STATE_HOME" "$CFG_HOME"' EXIT
+trap 'rm -f "$RAW" "$OUT" "$RAW.py" "$RAW.ts" "$RAW.multi" "$RAW.redacted" "$OUT.wrap" "$OUT.dry" "$OUT.cwd" "$OUT.xdg" "$OUT.bundle" "$OUT.err"; rm -rf "$XDG_STATE_HOME" "$CFG_HOME"' EXIT
 
 # 단일 진입점이 남긴 원본 run 디렉토리를 stderr 의 "[원본]" 줄에서 찾아 지운다.
 # (XDG_STATE_HOME 격리에 더한 이중 안전장치)
@@ -130,6 +130,25 @@ multi_lines=$(grep -c '"type":"line"' "$RAW.multi" || true)
 [ "$multi_lines" -eq 1 ] \
   && ok "두 조건 교집합이 원격에서 계산됨 (1줄)" \
   || bad "교집합 결과가 $multi_lines 줄 (기대 1)"
+
+# 민감 값 가림 — 수집기 stdout 이 신뢰 경계다. 파서의 raw.ndjson 은 이걸
+# 그대로 저장하므로 (아래 "원본 NDJSON" 검사) 여기서 새지 않으면 거기서도 안 샌다.
+$LS --app redacted --env test --rid "$RID" --max-lines 0 > "$RAW.redacted" 2>/dev/null
+redacted_lines=$(grep -c '"type":"line"' "$RAW.redacted" || true)
+if [ "$redacted_lines" -eq 15 ] \
+  && ! grep -q 'tenant-a\|req_uid_\|invalid memory address' "$RAW.redacted" \
+  && [ "$(grep -o 'removed\*\*' "$RAW.redacted" | wc -l | tr -d ' ')" -eq 3 ]; then
+  ok "민감 값이 가려져 나감 (최상위 키·임베디드 JSON·plain 정규식)"
+else
+  bad "민감 값 가림 실패 (줄=$redacted_lines)"
+fi
+python3 - "$RAW.redacted" <<'PY' && ok "가린 JSON 줄이 여전히 유효한 JSON" || bad "가린 뒤 JSON 이 깨짐"
+import json, sys
+for ev in map(json.loads, open(sys.argv[1])):
+    line = ev.get("line", "")
+    if ev["type"] == "line" and line.startswith("{"):
+        json.loads(line)
+PY
 
 grep -q '"fields":\[{"field":"rid"' "$RAW.multi" \
   && ok "조건 순서가 앱 설정을 따름 (rid 먼저)" \

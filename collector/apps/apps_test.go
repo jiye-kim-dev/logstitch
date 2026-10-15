@@ -138,3 +138,35 @@ func TestLoadAreaRules(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadRedact(t *testing.T) {
+	t.Run("redact 규칙을 읽는다", func(t *testing.T) {
+		path := write(t, `{"apps":{"fw":{"required":["rid"],
+			"redact":{"fields":["password"],"patterns":["\\d{4}"]}}}}`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("로드 실패: %v", err)
+		}
+		app, _ := cfg.Find("fw")
+		if len(app.Redact.Fields) != 1 || len(app.Redact.Patterns) != 1 {
+			t.Errorf("redact 규칙이 %+v", app.Redact)
+		}
+	})
+
+	// 검색·표현에 쓰는 필드를 가리면 파서 판정이 에러 없이 망가진다.
+	cases := map[string]string{
+		"정규식 오류":            `{"apps":{"x":{"required":["a"],"redact":{"patterns":["(?<=x)y"]}}}}`,
+		"fields 중복":         `{"apps":{"x":{"required":["a"],"redact":{"fields":["p","p"]}}}}`,
+		"required 와 겹침":     `{"apps":{"x":{"required":["a"],"redact":{"fields":["a"]}}}}`,
+		"영역 required 와 겹침":  `{"apps":{"x":{"required":["a"],"areas":{"lal":{"required":["sess"]}},"redact":{"fields":["sess"]}}}}`,
+		"view.lane 과 겹침":    `{"apps":{"x":{"required":["a"],"view":{"lane":"server_id"},"redact":{"fields":["server_id"]}}}}`,
+		"view.session 과 겹침": `{"apps":{"x":{"required":["a"],"view":{"session":"trace_id"},"redact":{"fields":["trace_id"]}}}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, body)); err == nil {
+				t.Error("거부되어야 하는 설정이 통과했다")
+			}
+		})
+	}
+}

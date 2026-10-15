@@ -45,9 +45,29 @@
         },
         "view": { "$ref": "#/definitions/viewHint" },
         "parser": { "$ref": "#/definitions/parserHint" },
+        "redact": { "$ref": "#/definitions/redact" },
         "note": {
           "type": "string",
           "description": "사람용 메모. 코드는 쓰지 않는다."
+        }
+      }
+    },
+    "redact": {
+      "type": "object",
+      "description": "파서로 내보내기 전에 가릴 민감 값 규칙. 수집기가 줄을 내보내기 직전에 적용하므로 파서의 raw.ndjson 에도 남지 않는다. 가린 값은 \"**removed**\" 로 바뀐다. 모든 영역에 적용된다. 근거: collector/collect/redact.go",
+      "additionalProperties": false,
+      "properties": {
+        "_comment": { "$ref": "#/definitions/comment" },
+        "fields": {
+          "type": "array",
+          "description": "JSON 줄에서 값을 가릴 키 이름. 깊이와 무관하게 일치하는 키를 모두 가리고, 문자열로 박힌 JSON 안까지 본다. 키는 남기고 값만 바꾼다. required·areas.*.required·view.lane·view.session 과 겹치면 거부된다 — 가리면 파서가 매칭 판정·레인 구분을 못 한다.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "patterns": {
+          "type": "array",
+          "description": "가릴 값의 정규식 (Go RE2 — lookbehind·backreference 불가). plain 줄은 줄 전체에, JSON 줄은 문자열·숫자 값에 적용한다 (패턴에 걸린 숫자는 문자열로 바뀐다).",
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },

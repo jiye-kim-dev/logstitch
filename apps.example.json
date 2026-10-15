@@ -19,6 +19,11 @@
       ],
       "areas": {
         "small": { "required": ["sess"] }
+      },
+      "redact": {
+        "_comment": "JSON 은 fields 의 키 값을, plain 은 patterns 에 걸린 부분을 **removed** 로 바꾼다.",
+        "fields": ["password", "access_token"],
+        "patterns": ["01[016789]-?\\d{3,4}-?\\d{4}"]
       }
     }
   }
