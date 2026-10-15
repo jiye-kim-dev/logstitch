@@ -84,8 +84,10 @@ type request struct {
 	TimeFrom string
 	TimeTo   string
 	// View / Parser 는 앱 설정의 힌트다. 해석 없이 meta 이벤트로 파서에 넘긴다.
+	// Redactor 는 앱 설정의 민감 값 가림 규칙이다. nil 이면 원문 그대로 내보낸다.
 	View       json.RawMessage
 	Parser     json.RawMessage
+	Redactor   *collect.Redactor
 	Areas      []string
 	After      int
 	TimeoutSec int
@@ -268,6 +270,7 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 		Areas:       areaOrder,
 		View:        req.View,
 		Parser:      req.Parser,
+		Redactor:    req.Redactor,
 		TimeFrom:    req.TimeFrom,
 		TimeTo:      req.TimeTo,
 	}, out)
@@ -354,6 +357,12 @@ func buildRequest(
 		return request{}, fmt.Errorf("--from(%s) 이 --to(%s) 보다 뒤입니다", timeFrom, timeTo)
 	}
 
+	// apps.Load 가 정규식을 이미 검증했으므로 여기서는 실패하지 않는다.
+	redactor, err := collect.NewRedactor(appDef.Redact.Fields, appDef.Redact.Patterns)
+	if err != nil {
+		return request{}, err
+	}
+
 	return request{
 		AppsPath:      appsPath,
 		InventoryBase: inventoryBase,
@@ -366,6 +375,7 @@ func buildRequest(
 		TimeTo:        timeTo,
 		View:          appDef.View,
 		Parser:        appDef.Parser,
+		Redactor:      redactor,
 		Areas:         areas,
 		After:         after,
 		TimeoutSec:    timeout,

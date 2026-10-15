@@ -6,7 +6,10 @@
     "(파이썬은 --field 를 하나만 받는다).",
     "",
     "multi 는 필수 필드 둘 — 원격에서 grep 이 이어붙어 교집합이 나오는지",
-    "확인하는 데 쓴다."
+    "확인하는 데 쓴다.",
+    "",
+    "redacted 는 sample 과 같은 로그에 redact 규칙을 건다 — 최상위 키(cpk),",
+    "body 문자열에 박힌 JSON 안의 키(storage_key), plain panic 줄의 정규식."
   ],
   "apps": {
     "sample": {
@@ -16,6 +19,13 @@
       "required": ["rid", "state"],
       "parser": { "tsKeys": ["ts"] },
       "note": "scheduler 픽스처에 rid 와 state 가 같이 찍힌다. parser 힌트는 meta 통과 검증용 (ts 는 전역 별칭이라 동작은 안 바뀐다)"
+    },
+    "redacted": {
+      "required": ["rid"],
+      "redact": {
+        "fields": ["cpk", "storage_key"],
+        "patterns": ["invalid memory address"]
+      }
     }
   }
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -35,6 +36,9 @@ type App struct {
 	// Areas 는 특정 영역에만 다르게 적용할 규칙이다. 키는 인벤토리의 영역 이름.
 	Areas map[string]AreaRule `json:"areas,omitempty"`
 
+	// Redact 는 파서로 내보내기 전에 가릴 민감 값 규칙이다. 모든 영역에 적용된다.
+	Redact Redact `json:"redact,omitempty"`
+
 	// Note 는 사람을 위한 메모다. 코드는 쓰지 않는다.
 	Note string `json:"note,omitempty"`
 }
@@ -53,6 +57,17 @@ type AreaRule struct {
 	// 마찬가지로 값을 안 주면 이 영역은 시간 범위로만 검색할거고, 최대 24H 이다.
 	// 빈 배열은 "이 영역은 늘 시간 범위로만" 이라는 뜻으로 유효하다.
 	Required []string `json:"required"`
+}
+
+// Redact 는 민감 값 가림 규칙이다. 가린 값은 collect.Removed 로 바뀐다.
+type Redact struct {
+	// Fields 는 JSON 줄에서 값을 가릴 키 이름이다. 깊이와 무관하게 일치하는
+	// 키를 모두 가린다 (문자열로 박힌 JSON 안까지).
+	Fields []string `json:"fields,omitempty"`
+
+	// Patterns 는 줄 전체(JSON·plain 공통)에 적용할 정규식이다.
+	// Go RE2 문법이라 lookbehind·backreference 는 쓸 수 없다.
+	Patterns []string `json:"patterns,omitempty"`
 }
 
 type Config struct {
@@ -87,7 +102,7 @@ func Load(path string) (*Config, error) {
 					"       필수 필드가 없으면 어떤 값으로 검색할지 정할 수 없습니다",
 				path, name)
 		}
-		if err := validateFields(app.Required, path, fmt.Sprintf("앱 %q", name)); err != nil {
+		if err := validateFields(app.Required, path, fmt.Sprintf("앱 %q 의 required", name)); err != nil {
 			return nil, err
 		}
 
@@ -97,27 +112,85 @@ func Load(path string) (*Config, error) {
 					"[앱 설정 오류] %s: 앱 %q 의 areas 에 빈 영역 이름이 있습니다", path, name)
 			}
 			if err := validateFields(
-				rule.Required, path, fmt.Sprintf("앱 %q 의 영역 %q", name, area),
+				rule.Required, path, fmt.Sprintf("앱 %q 의 영역 %q 의 required", name, area),
 			); err != nil {
 				return nil, err
 			}
+		}
+
+		if err := validateRedact(app, path, name); err != nil {
+			return nil, err
 		}
 	}
 	return &cfg, nil
 }
 
-// validateFields 는 required 목록에 빈 이름이나 중복이 없는지 본다.
+// validateRedact 는 정규식을 미리 컴파일해 보고, 가릴 필드가 검색·표현에
+// 쓰이는 필드와 겹치지 않는지 본다.
+//
+// 겹치면 조용히 망가진다. 파서는 매칭 종류를 판정할 때 줄 안에서 검색값을
+// 다시 찾고 (records.ts classifyMatch), contention 뷰는 lane/session 값으로
+// 레인을 나눈다. 그 값이 **removed** 가 되면 판정이 전부 substring 이 되거나
+// 레인이 하나로 뭉친다 — 에러 없이. 그래서 기동 시점에 거부한다.
+func validateRedact(app App, path, name string) error {
+	if err := validateFields(app.Redact.Fields, path, fmt.Sprintf("앱 %q 의 redact.fields", name)); err != nil {
+		return err
+	}
+	for _, p := range app.Redact.Patterns {
+		if _, err := regexp.Compile(p); err != nil {
+			return fmt.Errorf(
+				"[앱 설정 오류] %s: 앱 %q 의 redact.patterns 정규식 %q 오류: %w\n"+
+					"       Go RE2 문법입니다 (lookbehind·backreference 불가)",
+				path, name, p, err)
+		}
+	}
+
+	used := make(map[string]string)
+	for _, f := range app.Required {
+		used[f] = "required"
+	}
+	for area, rule := range app.Areas {
+		for _, f := range rule.Required {
+			used[f] = fmt.Sprintf("areas.%s.required", area)
+		}
+	}
+	// view 는 통과 채널이라 다른 곳에서는 해석하지 않는다. 여기서도 겹침
+	// 판정에 필요한 두 키만 읽고, 형태가 틀려도 그건 파서가 판단할 일이다.
+	var view struct {
+		Lane    string `json:"lane"`
+		Session string `json:"session"`
+	}
+	_ = json.Unmarshal(app.View, &view)
+	if view.Lane != "" {
+		used[view.Lane] = "view.lane"
+	}
+	if view.Session != "" {
+		used[view.Session] = "view.session"
+	}
+
+	for _, f := range app.Redact.Fields {
+		if where, ok := used[f]; ok {
+			return fmt.Errorf(
+				"[앱 설정 오류] %s: 앱 %q 의 redact.fields 에 %q 가 있는데 %s 에서도 씁니다\n"+
+					"       가리면 파서가 매칭 판정·레인 구분을 못 합니다. 둘 중 하나를 빼세요",
+				path, name, f, where)
+		}
+	}
+	return nil
+}
+
+// validateFields 는 필드 목록(required, redact.fields)에 빈 이름이나 중복이 없는지 본다.
 // where 는 에러 메시지에 들어갈 위치 설명이다 (앱 레벨과 영역 레벨이 공유).
 func validateFields(fields []string, path, where string) error {
 	seen := make(map[string]bool, len(fields))
 	for _, field := range fields {
 		if strings.TrimSpace(field) == "" {
 			return fmt.Errorf(
-				"[앱 설정 오류] %s: %s 의 required 에 빈 필드 이름이 있습니다", path, where)
+				"[앱 설정 오류] %s: %s 에 빈 필드 이름이 있습니다", path, where)
 		}
 		if seen[field] {
 			return fmt.Errorf(
-				"[앱 설정 오류] %s: %s 의 required 에 %q 가 두 번 있습니다", path, where, field)
+				"[앱 설정 오류] %s: %s 에 %q 가 두 번 있습니다", path, where, field)
 		}
 		seen[field] = true
 	}

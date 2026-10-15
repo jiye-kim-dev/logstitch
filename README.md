@@ -186,6 +186,24 @@ $LS --field user_key=U --field trace_id=T --field sess=RTMPPUSH246
 다른 로그는 같은 영역의 `sources` 에 넣지 말고 별도 영역으로 나눠야 한다
 (같은 호스트를 두 영역에 써도 된다).
 
+**민감 값은 `redact` 로 가린다.** 수집기가 줄을 내보내기 직전에 가리므로 화면에도,
+파서가 남기는 원본(`raw.ndjson`)에도 남지 않는다. 가린 값은 `**removed**` 가 된다.
+
+```json
+"redact": {
+  "fields":   ["password", "access_token"],
+  "patterns": ["01[016789]-?\\d{3,4}-?\\d{4}"]
+}
+```
+
+- `fields` — JSON 줄에서 이 키의 **값**을 가린다 (키는 남긴다). 깊이와 무관하고,
+  `body` 처럼 문자열에 박힌 JSON 안까지 본다.
+- `patterns` — Go RE2 정규식 (lookbehind 불가). plain 줄은 줄 전체에, JSON 줄은
+  문자열·숫자 값에 적용한다.
+
+`required`·`areas` 의 필드나 `view.lane`/`view.session` 은 `fields` 에 넣을 수 없다
+(로드 시 거부). 가리면 파서가 매칭 종류 판정과 레인 구분을 못 한다.
+
 apps.json 과 인벤토리 모두 JSON Schema 가 있다 (`schemas/`). 파일 맨 위에
 `"$schema": "https://raw.githubusercontent.com/jiye-kim-dev/logstitch/main/schemas/apps.schema.json"`
 을 넣으면 IDE 가 자동완성·오타 검증을 해준다 (인벤토리는 `inventory.schema.json`).
