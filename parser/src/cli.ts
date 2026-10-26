@@ -38,8 +38,8 @@ import {
   resolveView,
 } from './profiles.ts'
 import type { ViewName } from './profiles.ts'
-import { Normalizer, collapseRuns } from './records.ts'
-import { renderJsonl, renderSummary, renderText } from './render.ts'
+import { Normalizer, collapseRuns, groupByMatchedValue } from './records.ts'
+import { criteriaText, renderJsonl, renderSummary, renderText } from './render.ts'
 import { isWeakMatch } from './types.ts'
 import type { CollectorEvent, Criterion, HostResult, LogRecord, ViewHint } from './types.ts'
 import { renderContention } from './view-contention.ts'
@@ -72,7 +72,7 @@ function parseCliArgs() {
       // ── 수집기로 그대로 전달되는 플래그 (하나라도 주면 수집 모드) ──────
       app: { type: 'string' },
       env: { type: 'string' },
-      rid: { type: 'string' },
+      rid: { type: 'string', multiple: true, default: [] },
       field: { type: 'string', multiple: true, default: [] },
       area: { type: 'string', multiple: true, default: [] },
       from: { type: 'string' },
@@ -157,7 +157,7 @@ function parseCliArgs() {
   }
   forward('--app', values.app)
   forward('--env', values.env)
-  forward('--rid', values.rid)
+  for (const rid of values.rid) collect.push('--rid', rid)
   for (const spec of values.field) collect.push('--field', spec)
   // 검색 조건 밖의 수집 옵션은 따로 모은다 — run 디렉토리의 meta.json 에도 남긴다.
   const opts: string[] = []
@@ -182,12 +182,16 @@ function parseCliArgs() {
   // 규칙이 두 벌이 된다 — 플래그 검증을 위임하는 것과 같은 원칙.
 
   // ── 원본 보존용 실행 정보 (수집 모드, dry-run 제외) ─────────────────────
-  const fields: Record<string, string> = {}
-  if (values.rid !== undefined) fields['rid'] = values.rid
-  for (const spec of values.field) {
+  // 같은 키를 반복하면 그 필드의 OR 값이다 (수집기 parseFields 와 같은 규약).
+  // meta.json 모양을 지키려고 값이 하나면 문자열, 여러 개일 때만 배열로 남긴다.
+  const given: Record<string, string[]> = {}
+  for (const spec of [...values.rid.map((rid) => `rid=${rid}`), ...values.field]) {
     const cut = spec.indexOf('=')
-    if (cut > 0 && !(spec.slice(0, cut) in fields)) fields[spec.slice(0, cut)] = spec.slice(cut + 1)
+    if (cut > 0) (given[spec.slice(0, cut)] ??= []).push(spec.slice(cut + 1))
   }
+  const fields: Record<string, string | string[]> = Object.fromEntries(
+    Object.entries(given).map(([key, vs]) => [key, vs.length === 1 ? vs[0]! : vs]),
+  )
   const run: RunInfo | null =
     collect.length > 0 && !values['dry-run']
       ? { app: values.app ?? 'app', env: values.env ?? '', fields, opts }
@@ -215,7 +219,7 @@ function parseCliArgs() {
 interface RunInfo {
   app: string
   env: string
-  fields: Record<string, string>
+  fields: Record<string, string | string[]>
   opts: string[]
 }
 
@@ -237,7 +241,12 @@ function newRunDir(run: RunInfo): string {
     `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
     `-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
   const clean = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, '_')
-  const slug = clean(Object.values(run.fields)[0] ?? '').slice(0, 8) || 'run'
+  // 다중 값이면 첫 값 뒤에 나머지 개수를 붙인다 (rid-aaaa+80).
+  const primary = Object.values(run.fields)[0] ?? ''
+  const slug =
+    typeof primary === 'string'
+      ? clean(primary).slice(0, 8) || 'run'
+      : `${clean(primary[0] ?? '').slice(0, 8)}+${primary.length - 1}`
 
   const dir = join(runsRoot(), `${stamp}-${clean(run.app)}-${slug}`)
   mkdirSync(dir, { recursive: true })
@@ -370,6 +379,7 @@ async function main(): Promise<number> {
           environment,
           field: primary.field,
           value: primary.value,
+          values: primary.values,
           embed: opt.embed,
           // 앱별 필드 별칭(apps.json 의 parser 힌트)을 전역 별칭 앞에 얹는다.
           aliases: mergeAliases(parseParserHint(event.parser)),
@@ -471,8 +481,20 @@ async function main(): Promise<number> {
     return a.seq - b.seq
   })
 
+  // 주 식별자에 값이 여러 개면 값별로 나눠 그린다 — "요청 하나의 흐름" 컨셉 유지.
+  // 접기도 값별로 한다. 섞인 채로 접으면 다른 값의 줄이 끼어 반복이 끊긴다.
+  const primaryValues = criteria[0]?.values ?? []
+  const groups =
+    primaryValues.length > 1
+      ? groupByMatchedValue(kept, primaryValues)
+      : [{ value: null, records: kept }]
   const beforeCollapse = kept.length
-  if (opt.collapse) kept = collapseRuns(kept)
+  if (opt.collapse) {
+    for (const group of groups) group.records = collapseRuns(group.records)
+    // JSONL 은 시간순을 유지한다 — 접고 남은 레코드만 원래 순서에서 고른다.
+    const survivors = new Set(groups.flatMap((g) => g.records))
+    kept = kept.filter((r) => survivors.has(r))
+  }
   const collapsed = beforeCollapse - kept.length
 
   const out = (line: string): void => {
@@ -485,7 +507,7 @@ async function main(): Promise<number> {
   const summaryOptions = { app, environment, areaOrder, criteria, color: opt.color }
 
   if (kept.length === 0) {
-    const shown = criteria.map((c) => `${c.field}=${c.value}`).join(' AND ')
+    const shown = criteriaText(criteria)
     const range =
       timeFrom !== '' || timeTo !== '' ? ` (time ${timeFrom || '…'} ~ ${timeTo || '…'})` : ''
     err(`결과 없음: ${shown}${range}`)
@@ -507,16 +529,29 @@ async function main(): Promise<number> {
     const profile = PROFILES[app]
     const view = resolveView(opt.view, viewHint, profile)
 
-    switch (view) {
-      case 'flow':
-        renderFlow(kept, areaOrder, textOptions, out)
-        break
-      case 'contention':
-        renderContention(kept, contentionSetup(viewHint, profile), textOptions, out)
-        break
-      case 'timeline':
-        renderText(kept, areaOrder, textOptions, out)
-        break
+    const renderView = (records: LogRecord[]): void => {
+      switch (view) {
+        case 'flow':
+          renderFlow(records, areaOrder, textOptions, out)
+          break
+        case 'contention':
+          renderContention(records, contentionSetup(viewHint, profile), textOptions, out)
+          break
+        case 'timeline':
+          renderText(records, areaOrder, textOptions, out)
+          break
+      }
+    }
+
+    if (primaryValues.length > 1) {
+      const field = criteria[0]!.field
+      for (const group of groups) {
+        out(`\n── ${field}=${group.value ?? '? (값을 정하지 못한 줄)'} ──`)
+        if (group.records.length === 0) out('  (결과 없음)')
+        else renderView(group.records)
+      }
+    } else {
+      renderView(kept)
     }
   }
 

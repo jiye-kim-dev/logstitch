@@ -33,22 +33,30 @@ type Target struct {
 
 	// Values 는 이 타깃에서 쓸 grep 교집합 값이다. 영역마다 다를 수 있어서
 	// (apps.json 의 areas 규칙) 공통이 아니라 타깃에 실린다.
+	// 바깥은 AND(파이프 단계), 안쪽은 한 단계 안의 OR 값이다.
 	// 비어 있으면 시각 범위로만 긁는다 — 호출부가 범위를 요구한다.
-	Values []string
+	Values [][]string
 }
 
-// Criterion : and 조건으로 필터링 주고 싶을때
+// Criterion : and 조건으로 필터링 주고 싶을때. Values 가 둘 이상이면 같은 필드 안의 OR 이다.
+// Value 는 Values[0] 과 같다 — values 를 모르는 옛 파서·raw.ndjson 재파싱 호환용.
 type Criterion struct {
-	Field string `json:"field"`
-	Value string `json:"value"`
+	Field  string   `json:"field"`
+	Value  string   `json:"value"`
+	Values []string `json:"values,omitempty"`
 }
 
-// CriterionValues 는 조건에서 검색값만 뽑는다. 원격 grep 에는 값만 나가고
-// 필드 이름은 파서가 매칭 종류를 판정할 때만 쓴다.
-func CriterionValues(criteria []Criterion) []string {
-	out := make([]string, 0, len(criteria))
+// CriterionValues 는 조건마다 grep 한 단계에 넣을 값들을 뽑는다. 원격 grep 에는
+// 값만 나가고 필드 이름은 파서가 매칭 종류를 판정할 때만 쓴다.
+// 바깥 슬라이스는 AND(파이프 단계), 안쪽은 한 단계 안의 OR(-e 반복)이다.
+func CriterionValues(criteria []Criterion) [][]string {
+	out := make([][]string, 0, len(criteria))
 	for _, c := range criteria {
-		out = append(out, c.Value)
+		if len(c.Values) > 0 {
+			out = append(out, c.Values)
+			continue
+		}
+		out = append(out, []string{c.Value})
 	}
 	return out
 }

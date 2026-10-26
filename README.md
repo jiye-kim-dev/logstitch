@@ -319,6 +319,17 @@ logstitch --app forwarder --env prod \
 $LS --rid abc123 --field cpk=tenant-a | logstitch-parse
 ```
 
+같은 필드를 반복하면 그 필드의 **OR** 이 된다 (필드끼리는 여전히 AND). 에러가 몰린
+요청 여러 개를 ssh 왕복·파일 스캔 1회로 긁을 때 쓴다. 값이 여러 개면 결과가 값 수만큼
+불어나므로 `--from`·`--to` 가 둘 다 필요하다. 파서는 값별로 섹션을 나눠 그린다.
+
+```sh
+$LS --rid a1 --rid b2 --rid c3 --from 2026-10-26T02:00 --to 2026-10-26T02:30 | logstitch-parse
+```
+
+줄 수 상한(`--max-lines`)은 값 전체 합계에 걸린다. 잘렸다는 경고가 나오면 상한을
+올리기보다 값을 나눠 다시 요청한다. HTTP API 에서는 `"fields":{"rid":["a1","b2"]}` 로 준다.
+
 ### 뷰 고르기 (`--view`)
 
 출력 뷰는 로그의 관계 패턴에 따라 셋이다. 기본값은 `apps.json` 의 `view` 힌트를

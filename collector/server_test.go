@@ -46,6 +46,24 @@ func TestHandleCollect(t *testing.T) {
 		}
 	})
 
+	t.Run("fields 값에 배열을 주면 같은 필드의 OR 값이 된다", func(t *testing.T) {
+		rec := post(`{"app":"ai-stt","env":"dev","fields":{"rid":["abc","def"]},` +
+			`"from":"2026-10-26T02:00","to":"2026-10-26T02:30","dry_run":true}`)
+		if rec.Code != 200 {
+			t.Fatalf("코드 = %d, 본문 = %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "-e abc -e def") {
+			t.Errorf("OR 단계가 스크립트에 없음: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("fields 값이 문자열도 배열도 아니면 400", func(t *testing.T) {
+		rec := post(`{"app":"ai-stt","env":"dev","fields":{"rid":1}}`)
+		if rec.Code != 400 {
+			t.Errorf("코드 = %d, 본문 = %s", rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("필수 필드 누락은 400", func(t *testing.T) {
 		rec := post(`{"app":"ai-stt","env":"dev"}`)
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "rid") {

@@ -66,7 +66,7 @@ func TestBuildScriptInvariants(t *testing.T) {
 		{Name: "app", Paths: []string{"/var/log/kollus/ai-stt/requester/requester.log*"}},
 		{Name: "debug", Paths: []string{"/var/log/kollus/ai-stt-scheduler/debug.log*"}},
 	}
-	script := BuildScript(sources, Query{Values: []string{"rid-7f3a91"}})
+	script := BuildScript(sources, Query{Values: [][]string{{"rid-7f3a91"}}})
 
 	// glob 은 원격 셸이 확장해야 하므로 인용되면 안 된다.
 	if !strings.Contains(script, "for f in /var/log/kollus/ai-stt/requester/requester.log*; do") {
@@ -94,7 +94,7 @@ func TestBuildScriptInvariants(t *testing.T) {
 		}
 	}
 
-	withCtx := BuildScript(sources[:1], Query{Values: []string{"x"}, After: 20})
+	withCtx := BuildScript(sources[:1], Query{Values: [][]string{{"x"}}, After: 20})
 	if !strings.Contains(withCtx, "-A 20") {
 		t.Error("--after 가 grep -A 로 전달되지 않았다")
 	}
@@ -113,7 +113,7 @@ func TestBuildScriptIntersection(t *testing.T) {
 	sources := []inventory.Source{
 		{Name: "app", Paths: []string{"/var/log/app.log*"}},
 	}
-	script := BuildScript(sources, Query{Values: []string{"abc", "s1", "n7"}})
+	script := BuildScript(sources, Query{Values: [][]string{{"abc"}, {"s1"}, {"n7"}}})
 
 	// 일반 파일 분기: grep 하나 뒤에 두 개가 파이프로 붙어야 한다.
 	if !strings.Contains(script, "grep -F -a -h -e abc -- \"$f\" 2>/dev/null | grep -F -a -e s1 | grep -F -a -e n7") {
@@ -129,7 +129,7 @@ func TestBuildScriptIntersection(t *testing.T) {
 	}
 
 	// 인용이 필요한 값도 이어붙는 자리에서 안전해야 한다.
-	quoted := BuildScript(sources, Query{Values: []string{"a", "it's b"}})
+	quoted := BuildScript(sources, Query{Values: [][]string{{"a"}, {"it's b"}}})
 	if !strings.Contains(quoted, `| grep -F -a -e 'it'\''s b'`) {
 		t.Errorf("이어붙인 값이 인용되지 않았다:\n%s", quoted)
 	}
@@ -137,6 +137,49 @@ func TestBuildScriptIntersection(t *testing.T) {
 	// 값도 시간 범위도 없으면 아무것도 하지 않는다.
 	if BuildScript(sources, Query{}) != "exit 0\n" {
 		t.Error("값도 범위도 없는데 스크립트가 생성됐다")
+	}
+}
+
+// TestBuildScriptSingleValueUnchanged 는 값이 하나씩일 때 스크립트가 다중 값
+// 지원 전과 바이트 단위로 같은지 고정한다. 기대값은 변경 전 코드의 출력이다.
+func TestBuildScriptSingleValueUnchanged(t *testing.T) {
+	sources := []inventory.Source{{Name: "app", Paths: []string{"/var/log/app.log*"}}}
+
+	got := BuildScript(sources, Query{Values: [][]string{{"rid-1"}}, After: 3})
+	want := "for f in /var/log/app.log*; do\n  [ -r \"$f\" ] || continue\n  case \"$f\" in\n" +
+		"    *.gz) gzip -cd -- \"$f\" 2>/dev/null | grep -F -a -A 3 -e rid-1 ;;\n" +
+		"    *)    grep -F -a -h -A 3 -e rid-1 -- \"$f\" 2>/dev/null ;;\n" +
+		"  esac | awk -v f=\"$f\" -v s=app '$0==\"--\"{next} {print s \"\\t\" f \"\\t\" $0}'\ndone\nexit 0\n"
+	if got != want {
+		t.Errorf("값 1개 스크립트가 바뀌었다:\n got %q\nwant %q", got, want)
+	}
+
+	chained := BuildScript(sources, Query{
+		Values:   [][]string{{"rid-1"}, {"it's"}},
+		TimeFrom: "2026-10-26T02:00",
+		TimeTo:   "2026-10-26T02:30",
+	})
+	for _, frag := range []string{
+		`gzip -cd -- "$f" 2>/dev/null | grep -F -a -e rid-1 | grep -F -a -e 'it'\''s' | awk -v from=2026-10-26T02:00 -v to=2026-10-26T02:30 '{`,
+		`grep -F -a -h -e rid-1 -- "$f" 2>/dev/null | grep -F -a -e 'it'\''s' | awk -v from=2026-10-26T02:00 -v to=2026-10-26T02:30 '{`,
+	} {
+		if !strings.Contains(chained, frag) {
+			t.Errorf("값 1개씩 이어붙인 스크립트가 바뀌었다 — 없는 조각:\n%s", frag)
+		}
+	}
+}
+
+// TestBuildScriptOrWithinStage 는 한 단계에 값이 여러 개면 -e 를 반복해
+// OR 로 거는지 본다. 단계 수(파이프)는 늘지 않아야 한다.
+func TestBuildScriptOrWithinStage(t *testing.T) {
+	sources := []inventory.Source{{Name: "app", Paths: []string{"/var/log/app.log*"}}}
+	script := BuildScript(sources, Query{Values: [][]string{{"a", "it's b"}, {"x"}}})
+
+	if !strings.Contains(script, `grep -F -a -h -e a -e 'it'\''s b' -- "$f" 2>/dev/null | grep -F -a -e x`) {
+		t.Errorf("일반 파일 분기에서 OR 단계가 아니다:\n%s", script)
+	}
+	if !strings.Contains(script, `gzip -cd -- "$f" 2>/dev/null | grep -F -a -e a -e 'it'\''s b' | grep -F -a -e x`) {
+		t.Errorf(".gz 분기에서 OR 단계가 아니다:\n%s", script)
 	}
 }
 
@@ -173,13 +216,13 @@ func TestBuildScriptTimeRange(t *testing.T) {
 	}
 
 	// 범위가 없으면 스크립트는 기존과 완전히 같아야 한다 (awk 필터 없음).
-	plain := BuildScript(sources, Query{Values: []string{"abc"}})
+	plain := BuildScript(sources, Query{Values: [][]string{{"abc"}}})
 	if strings.Contains(plain, "-v from=") {
 		t.Error("범위가 없는데 시각 필터가 들어갔다")
 	}
 
 	ranged := BuildScript(sources, Query{
-		Values:   []string{"abc"},
+		Values:   [][]string{{"abc"}},
 		TimeFrom: "2026-09-04T02:19",
 		TimeTo:   "2026-09-04T02:20",
 	})
@@ -193,7 +236,7 @@ func TestBuildScriptTimeRange(t *testing.T) {
 	}
 
 	// 한쪽 경계만 줘도 필터가 붙는다. 빈 쪽은 '' 로 넘어간다.
-	fromOnly := BuildScript(sources, Query{Values: []string{"abc"}, TimeFrom: "2026-09-04"})
+	fromOnly := BuildScript(sources, Query{Values: [][]string{{"abc"}}, TimeFrom: "2026-09-04"})
 	if !strings.Contains(fromOnly, "-v from=2026-09-04 -v to=''") {
 		t.Errorf("from 만 준 경우가 처리되지 않았다:\n%s", fromOnly)
 	}

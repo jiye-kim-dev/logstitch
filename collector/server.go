@@ -23,13 +23,13 @@ import (
 // apiRequest 는 POST /collect 의 JSON 본문이다. 외부 계약이므로 snake_case.
 // 의미와 기본값은 같은 이름의 CLI 플래그와 동일하다.
 type apiRequest struct {
-	App    string            `json:"app"`
-	Env    string            `json:"env"`
-	Fields map[string]string `json:"fields"`
-	From   string            `json:"from"`
-	To     string            `json:"to"`
-	Areas  []string          `json:"areas"`
-	After  int               `json:"after"`
+	App    string                 `json:"app"`
+	Env    string                 `json:"env"`
+	Fields map[string]fieldValues `json:"fields"`
+	From   string                 `json:"from"`
+	To     string                 `json:"to"`
+	Areas  []string               `json:"areas"`
+	After  int                    `json:"after"`
 	// Timeout 0 은 CLI 기본값(90초)을 쓴다. MaxLines 는 명시적 0(무제한)과
 	// 미지정(기본 50000)을 구분해야 해서 포인터다.
 	Timeout    int  `json:"timeout"`
@@ -91,8 +91,10 @@ func buildAPIRequest(body apiRequest, appsPath, inventoryBase string) (request, 
 	}
 
 	fields := make(stringList, 0, len(body.Fields))
-	for key, value := range body.Fields {
-		fields = append(fields, key+"="+value)
+	for key, values := range body.Fields {
+		for _, value := range values {
+			fields = append(fields, key+"="+value)
+		}
 	}
 
 	timeout := body.Timeout
@@ -105,7 +107,25 @@ func buildAPIRequest(body apiRequest, appsPath, inventoryBase string) (request, 
 	}
 
 	return buildRequest(appCfg, appsPath, inventoryBase,
-		body.App, body.Env, "", body.From, body.To,
+		body.App, body.Env, nil, body.From, body.To,
 		fields, body.Areas, body.After, timeout, body.Workers, maxLines,
 		body.NoRequired, body.DryRun)
+}
+
+// fieldValues 는 fields 의 값이다. "rid":"a" 와 "rid":["a","b"] 를 모두 받는다 —
+// 배열은 CLI 에서 같은 --field 를 반복한 것과 같다 (그 필드의 OR 값).
+type fieldValues []string
+
+func (v *fieldValues) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*v = fieldValues{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("fields 값은 문자열이나 문자열 배열이어야 합니다: %s", b)
+	}
+	*v = many
+	return nil
 }

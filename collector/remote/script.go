@@ -109,7 +109,8 @@ type Query struct {
 	// 선택적인(결과가 적은) 값을 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
 	// 비어 있으면 grep 없이 시간 범위만으로 거른다 — 전 구간을 훑으므로
 	// 호출부(main)가 범위를 요구하고 길이를 제한한다.
-	Values []string
+	// 안쪽 슬라이스는 한 단계 안의 OR 값이다 (같은 필드에 값 여러 개).
+	Values [][]string
 
 	// After 는 grep -A 컨텍스트 줄 수다. Values 가 하나일 때만 쓸 수 있다.
 	// 이어붙인 grep 에서는 앞 grep 이 붙인 컨텍스트 줄이 뒤 grep 에 걸리지
@@ -142,6 +143,11 @@ type Query struct {
 // 왕복이 값 개수만큼 늘고 걸러지기 전 줄이 전부 전송된다. 이어붙이면 왕복
 // 1회에 원격에서 이미 줄어든 것만 넘어온다.
 //
+// 한 단계에 값이 여러 개면(같은 필드 OR) 그 단계의 -e 를 반복한다.
+// grep -F 는 -e 끼리 OR 이고, 단계 수는 그대로다.
+//
+//	grep -F -e a1 -e a2 | grep -F -e v2
+//
 // 시각 범위(TimeFrom/TimeTo)가 있으면 grep 체인 뒤에 awkTimeRange 를 한 단
 // 더 붙인다. grep 다음인 이유: grep -F 가 awk 보다 훨씬 싸므로 먼저 줄여야
 // awk 가 훑을 양이 준다. 범위가 없으면 스크립트는 기존과 바이트 단위로 같다.
@@ -155,7 +161,7 @@ func BuildScript(sources []inventory.Source, q Query) string {
 	gzCmd := `gzip -cd -- "$f" 2>/dev/null`
 	plainCmd := `cat -- "$f" 2>/dev/null`
 	if len(q.Values) > 0 {
-		first := ShQuote(q.Values[0])
+		first := grepArgs(q.Values[0])
 
 		ctx := ""
 		if q.After > 0 {
@@ -164,14 +170,14 @@ func BuildScript(sources []inventory.Source, q Query) string {
 
 		// 두 번째 값부터는 파이프로 이어붙인다.
 		var chain strings.Builder
-		for _, value := range q.Values[1:] {
-			fmt.Fprintf(&chain, " | grep -F -a -e %s", ShQuote(value))
+		for _, stage := range q.Values[1:] {
+			fmt.Fprintf(&chain, " | grep -F -a %s", grepArgs(stage))
 		}
 		rest := chain.String()
 
-		gzCmd = fmt.Sprintf(`gzip -cd -- "$f" 2>/dev/null | grep -F -a %s-e %s%s`,
+		gzCmd = fmt.Sprintf(`gzip -cd -- "$f" 2>/dev/null | grep -F -a %s%s%s`,
 			ctx, first, rest)
-		plainCmd = fmt.Sprintf(`grep -F -a -h %s-e %s -- "$f" 2>/dev/null%s`,
+		plainCmd = fmt.Sprintf(`grep -F -a -h %s%s -- "$f" 2>/dev/null%s`,
 			ctx, first, rest)
 	}
 
@@ -197,4 +203,14 @@ func BuildScript(sources []inventory.Source, q Query) string {
 
 	b.WriteString("exit 0\n")
 	return b.String()
+}
+
+// grepArgs 는 한 단계의 값들을 -e 로 늘어놓는다. grep -F 는 -e 끼리 OR 이다.
+// 값이 하나면 "-e 'v'" 로 다중 값 지원 전 출력과 같다.
+func grepArgs(values []string) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = "-e " + ShQuote(v)
+	}
+	return strings.Join(parts, " ")
 }
