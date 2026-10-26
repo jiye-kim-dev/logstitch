@@ -47,6 +47,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -120,7 +121,7 @@ func run() error {
 				"기본: ./inventory → ~/.config/logstitch/inventory")
 		app    = flag.String("app", "", "대상 애플리케이션 (필수). 예: ai-stt")
 		env    = flag.String("env", "", "대상 환경 (필수). 예: prod, stage, dev")
-		rid    = flag.String("rid", "", "--field rid=<값> 의 축약형")
+		rids   stringList
 		fields stringList
 		areas  stringList
 		from   = flag.String("from", "",
@@ -139,7 +140,8 @@ func run() error {
 			"HTTP 서버로 실행 (예: :8080). POST /collect 가 CLI 와 같은 수집을 실행한다")
 		showVersion = flag.Bool("version", false, "버전을 출력하고 끝낸다")
 	)
-	flag.Var(&fields, "field", "검색 조건 (반복 가능). 형식: key=value")
+	flag.Var(&rids, "rid", "--field rid=<값> 의 축약형 (반복하면 OR)")
+	flag.Var(&fields, "field", "검색 조건 (반복 가능). 형식: key=value. 같은 key 를 반복하면 OR")
 	flag.Var(&areas, "area", "특정 영역만 조회 (반복 가능)")
 	flag.StringVar(inventoryBase, "inventory", *inventoryBase, "-i 의 긴 이름")
 	flag.Parse()
@@ -162,7 +164,7 @@ func run() error {
 		return err
 	}
 
-	req, err := buildRequest(appCfg, *appsPath, *inventoryBase, *app, *env, *rid, *from, *to,
+	req, err := buildRequest(appCfg, *appsPath, *inventoryBase, *app, *env, rids, *from, *to,
 		fields, areas, *after, *timeout, *workers, *maxLines, *noRequired, *dryRun)
 	if err != nil {
 		return err
@@ -279,7 +281,9 @@ func execute(ctx context.Context, req request, out io.Writer) (collect.Stats, er
 
 func buildRequest(
 	appCfg *apps.Config,
-	appsPath, inventoryBase, app, env, rid, from, to string,
+	appsPath, inventoryBase, app, env string,
+	rids stringList,
+	from, to string,
 	fields, areas stringList,
 	after, timeout, workers, maxLines int,
 	noRequired, dryRun bool,
@@ -307,9 +311,13 @@ func buildRequest(
 		return request{}, fmt.Errorf("--env 가 필요합니다. 예: --env prod")
 	}
 
-	// --rid 는 --field rid=<값> 의 축약형이다.
-	if rid != "" {
-		fields = append(fields, "rid="+rid)
+	// --rid 는 --field rid=<값> 의 축약형이다. 앞에 두어 rid 값 순서가 --rid 순서를 따르게 한다.
+	if len(rids) > 0 {
+		merged := make(stringList, 0, len(rids)+len(fields))
+		for _, r := range rids {
+			merged = append(merged, "rid="+r)
+		}
+		fields = append(merged, fields...)
 	}
 
 	given, err := parseFields(fields)
@@ -355,6 +363,13 @@ func buildRequest(
 	if timeFrom != "" && timeTo != "" &&
 		!strings.HasPrefix(timeFrom, timeTo) && timeFrom > timeTo {
 		return request{}, fmt.Errorf("--from(%s) 이 --to(%s) 보다 뒤입니다", timeFrom, timeTo)
+	}
+	// 값 여러 개는 결과가 값 수만큼 불어나므로 시각 범위를 양쪽 다 요구한다.
+	// 원격 스캔 양은 범위와 무관하다 (awk 가 grep 뒤) — 출력 양을 막는 가드다.
+	// 24시간 상한은 두지 않는다: 출력이 이미 그 값들이 찍힌 줄로 제한된다.
+	if multiValued(given) && (timeFrom == "" || timeTo == "") {
+		return request{}, fmt.Errorf(
+			"같은 필드에 값을 여러 개 줄 때는 --from 과 --to 가 모두 필요합니다")
 	}
 
 	// apps.Load 가 정규식을 이미 검증했으므로 여기서는 실패하지 않는다.
@@ -479,9 +494,9 @@ func boundRangeEnd(s string) time.Time {
 	}
 }
 
-// parseFields 는 key=value 목록을 파싱한다. 같은 키를 두 번 주면 거부한다.
-func parseFields(fields stringList) (map[string]string, error) {
-	given := make(map[string]string, len(fields))
+// parseFields 는 key=value 목록을 파싱한다. 같은 키를 반복하면 그 필드의 OR 값이 된다.
+func parseFields(fields stringList) (map[string][]string, error) {
+	given := make(map[string][]string, len(fields))
 	for _, spec := range fields {
 		key, value, ok := strings.Cut(spec, "=")
 		if !ok || key == "" {
@@ -490,12 +505,32 @@ func parseFields(fields stringList) (map[string]string, error) {
 		if value == "" {
 			return nil, fmt.Errorf("검색값이 비어 있습니다: %q", spec)
 		}
-		if _, dup := given[key]; dup {
-			return nil, fmt.Errorf("--field %s 가 두 번 주어졌습니다", key)
+		if slices.Contains(given[key], value) {
+			return nil, fmt.Errorf("--field %s=%s 가 두 번 주어졌습니다", key, value)
 		}
-		given[key] = value
+		given[key] = append(given[key], value)
 	}
 	return given, nil
+}
+
+// multiValued 는 값을 여러 개 받은 필드가 있는지 본다.
+func multiValued(given map[string][]string) bool {
+	for _, vs := range given {
+		if len(vs) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// newCriterion 은 조건 하나를 만든다. 값이 하나면 Values 를 비워 두어
+// meta 와이어 형태가 다중 값 지원 전과 같게 한다.
+func newCriterion(field string, values []string) collect.Criterion {
+	c := collect.Criterion{Field: field, Value: values[0]}
+	if len(values) > 1 {
+		c.Values = values
+	}
+	return c
 }
 
 // orderCriteria 는 앱의 required 를 모두 받았는지 확인하고 순서를 정한다.
@@ -509,7 +544,7 @@ func parseFields(fields stringList) (map[string]string, error) {
 func orderCriteria(
 	app string,
 	def apps.App,
-	given map[string]string,
+	given map[string][]string,
 	noRequired bool,
 ) ([]collect.Criterion, error) {
 
@@ -517,12 +552,12 @@ func orderCriteria(
 	criteria := make([]collect.Criterion, 0, len(given))
 
 	for _, field := range def.Required {
-		value, ok := given[field]
+		values, ok := given[field]
 		if !ok {
 			missing = append(missing, field)
 			continue
 		}
-		criteria = append(criteria, collect.Criterion{Field: field, Value: value})
+		criteria = append(criteria, newCriterion(field, values))
 	}
 
 	if len(missing) > 0 && !noRequired {
@@ -551,7 +586,7 @@ func orderCriteria(
 	}
 	sortStrings(extra)
 	for _, field := range extra {
-		criteria = append(criteria, collect.Criterion{Field: field, Value: given[field]})
+		criteria = append(criteria, newCriterion(field, given[field]))
 	}
 
 	return criteria, nil
@@ -565,11 +600,11 @@ func orderCriteria(
 //
 // 규칙에 필드가 여럿인데 일부만 주면 준 것만 쓴다 — 앵커가 하나라도 있으면
 // 전 구간을 훑지 않으므로, 좁히려는 의도를 막을 이유가 없다.
-func pickAreaCriteria(rule apps.AreaRule, given map[string]string) []collect.Criterion {
+func pickAreaCriteria(rule apps.AreaRule, given map[string][]string) []collect.Criterion {
 	out := make([]collect.Criterion, 0, len(rule.Required))
 	for _, field := range rule.Required {
-		if value, ok := given[field]; ok {
-			out = append(out, collect.Criterion{Field: field, Value: value})
+		if values, ok := given[field]; ok {
+			out = append(out, newCriterion(field, values))
 		}
 	}
 	return out

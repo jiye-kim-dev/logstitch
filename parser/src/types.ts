@@ -18,6 +18,11 @@ export type HostStatus = 'ok' | 'timeout' | 'ssh_error' | 'no_ssh_binary'
 export interface Criterion {
   field: string
   value: string
+  /**
+   * 같은 필드 안의 OR 값 (--rid a --rid b). 둘 이상일 때만 실린다.
+   * value 는 values[0] 과 같다 — values 를 모르는 옛 파서 호환용.
+   */
+  values?: string[]
 }
 
 /**
@@ -207,6 +212,8 @@ export interface LogRecord {
   usedKeys: string[]
 
   match: MatchKind
+  /** 다중 값 조회에서 이 줄이 걸린 값. 값이 하나면 없다. */
+  matchedValue?: string
   /** 시각을 뺀 레코드 지문. 같으면 "내용이 똑같은 줄"이다. */
   sig: string | null
 

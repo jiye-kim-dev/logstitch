@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { FAR_FUTURE_NANOS, mergeAliases } from '../src/fields.ts'
-import { Normalizer, classifyMatch, collapseRuns } from '../src/records.ts'
+import { Normalizer, classifyMatch, collapseRuns, groupByMatchedValue } from '../src/records.ts'
 import type { LineEvent, LogRecord } from '../src/types.ts'
 
 const RID = 'rid-7f3a91'
@@ -144,6 +144,69 @@ describe('Normalizer', () => {
     )
     assert.deepEqual(rec.usedKeys, ['msg', 'time'])
     assert.ok(!rec.usedKeys.includes('event'), 'event 가 회색 줄에서 사라진다')
+  })
+})
+
+describe('Normalizer 다중 값 (같은 필드 OR)', () => {
+  const A = 'rid-aaaa01'
+  const B = 'rid-bbbb02'
+  const multi = (): Normalizer =>
+    new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: A, values: [A, B] })
+
+  it('두 번째 값에 걸린 줄도 field 로 분류하고 그 값을 matchedValue 로 남긴다', () => {
+    // 첫 값으로만 판정하면 substring 이 되어 --strict 에서 조용히 사라진다.
+    const rec = multi().push(lineEvent(`{"msg":"m","rid":"${B}"}`))
+    assert.deepEqual(rec.match, { kind: 'field' })
+    assert.equal(rec.matchedValue, B)
+  })
+
+  it('JSON 이 아닌 줄은 줄에 들어 있는 값으로 묶는다', () => {
+    const rec = multi().push(lineEvent(`panic: boom ${B}`))
+    assert.deepEqual(rec.match, { kind: 'raw' })
+    assert.equal(rec.matchedValue, B)
+  })
+
+  it('어느 값도 없는 줄(--after 컨텍스트)은 같은 스트림 직전 줄의 값을 물려받는다', () => {
+    const n = multi()
+    n.push(lineEvent(`{"msg":"m","rid":"${B}"}`))
+    n.push(lineEvent(`{"msg":"m","rid":"${A}"}`, { host: 'kw42' }))
+    const ctx = n.push(lineEvent('    at handler.go:42'))
+    assert.equal(ctx.matchedValue, B)
+  })
+
+  it('값이 하나면 matchedValue 를 남기지 않는다 — 기존 레코드 모양 그대로', () => {
+    const one = new Normalizer({ app: 'sample', environment: 'test', field: 'rid', value: A })
+    const rec = one.push(lineEvent(`{"msg":"m","rid":"${A}"}`))
+    assert.equal(rec.matchedValue, undefined)
+    assert.equal('matchedValue' in rec, false)
+  })
+})
+
+describe('groupByMatchedValue', () => {
+  const r = (matchedValue: string | undefined): LogRecord =>
+    ({ matchedValue, seq: 0 }) as LogRecord
+
+  it('값 순서대로 묶고, 줄이 없는 값도 빈 그룹으로 남긴다', () => {
+    const groups = groupByMatchedValue([r('b'), r('a'), r('b')], ['a', 'b', 'c'])
+    assert.deepEqual(
+      groups.map((g) => [g.value, g.records.length]),
+      [
+        ['a', 1],
+        ['b', 2],
+        ['c', 0],
+      ],
+    )
+  })
+
+  it('값을 못 정한 줄은 버리지 않고 맨 뒤 그룹(value null)에 모은다', () => {
+    const groups = groupByMatchedValue([r(undefined), r('a')], ['a'])
+    assert.deepEqual(
+      groups.map((g) => [g.value, g.records.length]),
+      [
+        ['a', 1],
+        [null, 1],
+      ],
+    )
   })
 })
 

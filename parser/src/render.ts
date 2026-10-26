@@ -255,6 +255,7 @@ export function renderJsonl(records: LogRecord[], write: (line: string) => void)
         msg: record.msg,
         caller: record.caller,
         match: record.match,
+        matchedValue: record.matchedValue,
         repeat: record.repeat ?? 1,
         repeatUntil:
           record.repeatUntil === undefined ? null : record.repeatUntil.date.toISOString(),
@@ -264,6 +265,17 @@ export function renderJsonl(records: LogRecord[], write: (line: string) => void)
       }),
     )
   }
+}
+
+/** 검색 조건을 사람이 읽는 형태로. 다중 값은 rid ∈ {a, b} 로 쓴다. */
+export function criteriaText(criteria: Criterion[]): string {
+  return criteria
+    .map((c) =>
+      c.values !== undefined && c.values.length > 1
+        ? `${c.field} ∈ {${c.values.join(', ')}}`
+        : `${c.field}=${c.value}`,
+    )
+    .join(' AND ')
 }
 
 export interface SummaryOptions {
@@ -300,8 +312,7 @@ export function renderSummary(
     // 있어야 남는다. 결과가 적을 때 조건이 과했는지 여기서 보인다.
     write(
       paint(
-        `  조건 ${criteria.length}개 교집합: ` +
-          criteria.map((c) => `${c.field}=${c.value}`).join(' AND '),
+        `  조건 ${criteria.length}개 교집합: ` + criteriaText(criteria),
         'dim',
         color,
       ),
@@ -408,6 +419,19 @@ export function renderSummary(
         color,
       ),
     )
+    // 값을 여러 개 묶어 조회했다면 상한을 올리기보다 나눠 요청하는 게 맞다.
+    // 어느 값이 잘렸는지는 알 수 없으므로 값별 줄 수는 보이지 않는다.
+    const multi = criteria.find((c) => (c.values?.length ?? 0) > 1)
+    if (multi !== undefined) {
+      write(
+        paint(
+          `  ⚠ required 필드 ${multi.field} 의 값 ${multi.values!.length}개를 한 번에 조회해 ` +
+            `일부 값의 결과가 빠졌을 수 있습니다 — ${multi.field} 값을 나눠 다시 요청하세요`,
+          'yellow',
+          color,
+        ),
+      )
+    }
   }
 
   // 종료코드가 0 이어도 stderr 에 뭔가 있으면 남긴다 — 부분적으로만 읽힌

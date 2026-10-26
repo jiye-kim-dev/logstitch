@@ -40,7 +40,11 @@ func mixedInventory() *inventory.Inventory {
 func valuesByArea(targets []collect.Target) map[string]string {
 	out := make(map[string]string, len(targets))
 	for _, t := range targets {
-		out[t.Area] = strings.Join(t.Values, "|")
+		stages := make([]string, 0, len(t.Values))
+		for _, stage := range t.Values {
+			stages = append(stages, strings.Join(stage, ","))
+		}
+		out[t.Area] = strings.Join(stages, "|")
 	}
 	return out
 }
@@ -49,6 +53,7 @@ type args struct {
 	app        string
 	env        string
 	rid        string
+	rids       stringList
 	from       string
 	to         string
 	fields     stringList
@@ -60,8 +65,12 @@ type args struct {
 func build(t *testing.T, a args) (request, error) {
 	t.Helper()
 	timeout := 90
+	rids := a.rids
+	if a.rid != "" {
+		rids = append(stringList{a.rid}, rids...)
+	}
 	return buildRequest(testApps, "apps.json", "inventory",
-		a.app, a.env, a.rid, a.from, a.to, a.fields, a.areas, a.after, timeout, 0, 0,
+		a.app, a.env, rids, a.from, a.to, a.fields, a.areas, a.after, timeout, 0, 0,
 		a.noRequired, false)
 }
 
@@ -301,8 +310,10 @@ func TestBuildRequestRejectsBadInput(t *testing.T) {
 		"field 에 = 가 없음": {app: "ai-stt", env: "prod", fields: stringList{"rid"}},
 		"field 키가 빔":     {app: "ai-stt", env: "prod", fields: stringList{"=abc"}},
 		"검색값이 빔":         {app: "ai-stt", env: "prod", fields: stringList{"rid="}},
-		"같은 field 두 번": {app: "ai-stt", env: "prod",
-			fields: stringList{"rid=a", "rid=b"}},
+		"같은 field 에 같은 값 두 번": {app: "ai-stt", env: "prod",
+			fields: stringList{"rid=a", "rid=a"}, from: "2026-10-26T02:00", to: "2026-10-26T02:30"},
+		"--rid 와 --field 로 같은 값": {app: "ai-stt", env: "prod", rid: "a",
+			fields: stringList{"rid=a"}, from: "2026-10-26T02:00", to: "2026-10-26T02:30"},
 		"after 가 음수": {app: "ai-stt", env: "prod", rid: "abc", after: -1},
 	}
 	for name, a := range cases {
@@ -629,4 +640,77 @@ func TestWarnUnknownAreas(t *testing.T) {
 			t.Errorf("--area 로 좁혔을 뿐인데 경고가 났다: %q", got)
 		}
 	})
+}
+
+// TestMultiValueField 는 같은 필드를 반복하면 그 필드의 OR 값이 되는지 본다.
+func TestMultiValueField(t *testing.T) {
+	const from, to = "2026-10-26T02:00", "2026-10-26T02:30"
+
+	t.Run("--rid 반복은 조건 하나의 OR 값이 된다", func(t *testing.T) {
+		req, err := build(t, args{app: "ai-stt", env: "prod",
+			rids: stringList{"a", "b"}, from: from, to: to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Criteria) != 1 {
+			t.Fatalf("조건 수 = %d, 1 이어야 한다 (단계가 늘면 AND 가 된다)", len(req.Criteria))
+		}
+		c := req.Criteria[0]
+		if c.Field != "rid" || c.Value != "a" || strings.Join(c.Values, ",") != "a,b" {
+			t.Errorf("조건 = %+v", c)
+		}
+	})
+
+	t.Run("--field 반복도 같고, 다른 필드와는 AND 다", func(t *testing.T) {
+		req, err := build(t, args{app: "ai-stt", env: "prod",
+			fields: stringList{"rid=a", "level=error", "rid=b"}, from: from, to: to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := valuesByArea(targets)["api"]; got != "a,b|error" {
+			t.Errorf("grep 단계 = %q, a,b|error 여야 한다", got)
+		}
+	})
+
+	t.Run("값이 하나면 Values 를 싣지 않는다 — 와이어 형태 불변", func(t *testing.T) {
+		req, err := build(t, args{app: "ai-stt", env: "prod", rid: "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Criteria[0].Values != nil {
+			t.Errorf("값 1개인데 Values = %v", req.Criteria[0].Values)
+		}
+	})
+
+	t.Run("영역 규칙 필드도 OR 값을 받는다", func(t *testing.T) {
+		req, err := build(t, args{app: "mixed", env: "prod", rid: "r",
+			fields: stringList{"sess=s1", "sess=s2"}, from: from, to: to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets, _, err := buildTargets(mixedInventory(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := valuesByArea(targets)["lal"]; got != "s1,s2" {
+			t.Errorf("lal 영역 grep 단계 = %q, s1,s2 여야 한다", got)
+		}
+	})
+
+	for name, a := range map[string]args{
+		"--to 없음":   {from: from},
+		"--from 없음": {to: to},
+		"둘 다 없음":    {},
+	} {
+		t.Run("값 여러 개에 "+name+" 이면 거부", func(t *testing.T) {
+			a.app, a.env, a.rids = "ai-stt", "prod", stringList{"a", "b"}
+			if _, err := build(t, a); err == nil || !strings.Contains(err.Error(), "--from 과 --to") {
+				t.Errorf("거부되어야 한다: err = %v", err)
+			}
+		})
+	}
 }
