@@ -148,6 +148,24 @@ Host req-* sch-* rcv-*
 **`required` 는 순서가 의미를 가진다.** 원격에서 grep 을 이 순서로 이어붙이므로,
 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 뒤쪽 grep 이 훑을 양이 줄어든다.
 
+**상황에 따라 다른 필드로 찾으면 `required` 에 조합을 여럿 둔다.** 조합끼리는 OR,
+조합 안은 AND 다. 넘긴 필드로 모두 채워지는 **첫 조합**이 앵커가 된다.
+
+```json
+"subtitle": { "required": [["uuid"], ["user_id"]] }
+```
+
+```sh
+$LS --field uuid=U       # [uuid] 로 검색
+$LS --field user_id=X    # [user_id] 로 검색
+$LS --field uuid=U --field user_id=X   # uuid 가 앵커, user_id 는 추가 AND 조건
+```
+
+어느 조합도 못 채우면 가능한 조합과 예시를 보여주고 거부한다 (`--no-required` 와 달리
+필드 이름 오타가 걸러진다). 기존 `["a","b"]` 형태는 조합 하나로 읽힌다. 앞 조합을
+포함하는 조합(`[["uuid"],["uuid","user_id"]]`)은 절대 선택되지 않으므로 로드 시
+거부된다 — 넓은 조합을 앞에 둔다.
+
 **영역마다 앵커가 다르면 `areas` 로 가른다.** 같은 앱 안에서도 모듈에 따라 로그
 형태가 달라 공통 필드가 안 통할 때가 있다 (JSON 로그에는 `user_key` 가 있지만
 lal 계열 plain 로그에는 없는 경우).

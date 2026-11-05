@@ -12,16 +12,19 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
 
 // App 은 한 애플리케이션의 검색 규칙이다.
 type App struct {
-	// Required 는 이 앱을 조회할 때 반드시 넘겨야 하는 필드다.
-	// 순서가 의미를 가진다. 원격에서 grep 을 이 순서로 이어붙이므로
+	// Required 는 이 앱을 조회할 때 넘겨야 하는 필드 조합들이다.
+	// 넘긴 필드로 모두 채워지는 첫 조합이 쓰인다 (조합끼리 OR, 조합 안은 AND).
+	// 조합 안의 순서가 의미를 가진다. 원격에서 grep 을 이 순서로 이어붙이므로
 	// 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 전송량이 줄어든다.
-	Required []string `json:"required"`
+	// JSON 은 ["a","b"] (조합 하나) 와 [["a"],["b"]] (조합 여럿) 를 모두 받는다.
+	Required RequiredSets `json:"required"`
 
 	// View 는 파서를 위한 표현 힌트다. 수집기는 내용을 해석하지 않고
 	// meta 이벤트에 그대로 실어 보낸다 — 로그를 어떻게 보여줄지는
@@ -41,6 +44,38 @@ type App struct {
 
 	// Note 는 사람을 위한 메모다. 코드는 쓰지 않는다.
 	Note string `json:"note,omitempty"`
+}
+
+// RequiredSets 는 필수 필드 조합 목록이다. 조합 하나만 쓰던 기존 형태
+// ["a","b"] 는 [["a","b"]] 로 정규화한다 — 기존 apps.json 을 고치지 않아도 된다.
+type RequiredSets [][]string
+
+// UnmarshalJSON 은 두 형태를 받아 조합 목록으로 정규화한다.
+func (r *RequiredSets) UnmarshalJSON(b []byte) error {
+	var one []string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*r = RequiredSets{one}
+		return nil
+	}
+	var many [][]string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf(`required 는 ["a","b"] 또는 [["a"],["b"]] 형태여야 합니다`)
+	}
+	*r = many
+	return nil
+}
+
+// Fields 는 모든 조합의 필드를 선언 순서대로 중복 없이 펼친다.
+func (r RequiredSets) Fields() []string {
+	var out []string
+	for _, set := range r {
+		for _, f := range set {
+			if !slices.Contains(out, f) {
+				out = append(out, f)
+			}
+		}
+	}
+	return out
 }
 
 // AreaRule 은 한 영역에만 적용할 검색 규칙이다.
@@ -96,13 +131,15 @@ func Load(path string) (*Config, error) {
 	}
 
 	for name, app := range cfg.Apps {
-		if len(app.Required) == 0 {
+		if len(app.Required) == 0 || slices.ContainsFunc(app.Required, func(set []string) bool {
+			return len(set) == 0
+		}) {
 			return nil, fmt.Errorf(
 				"[앱 설정 오류] %s: 앱 %q 에 'required' 가 비어 있습니다\n"+
 					"       필수 필드가 없으면 어떤 값으로 검색할지 정할 수 없습니다",
 				path, name)
 		}
-		if err := validateFields(app.Required, path, fmt.Sprintf("앱 %q 의 required", name)); err != nil {
+		if err := validateRequired(app.Required, path, name); err != nil {
 			return nil, err
 		}
 
@@ -146,7 +183,7 @@ func validateRedact(app App, path, name string) error {
 	}
 
 	used := make(map[string]string)
-	for _, f := range app.Required {
+	for _, f := range app.Required.Fields() {
 		used[f] = "required"
 	}
 	for area, rule := range app.Areas {
@@ -174,6 +211,30 @@ func validateRedact(app App, path, name string) error {
 				"[앱 설정 오류] %s: 앱 %q 의 redact.fields 에 %q 가 있는데 %s 에서도 씁니다\n"+
 					"       가리면 파서가 매칭 판정·레인 구분을 못 합니다. 둘 중 하나를 빼세요",
 				path, name, f, where)
+		}
+	}
+	return nil
+}
+
+// validateRequired 는 조합마다 validateFields 를 돌리고, 앞 조합을 포함하는
+// 조합을 거부한다 — 앞 조합이 늘 먼저 채워져서 절대 선택되지 않기 때문이다.
+// 조합이 하나면 위치 설명을 기존과 같게 둔다 (에러 메시지 불변).
+func validateRequired(sets RequiredSets, path, name string) error {
+	for i, set := range sets {
+		where := fmt.Sprintf("앱 %q 의 required", name)
+		if len(sets) > 1 {
+			where = fmt.Sprintf("앱 %q 의 required[%d]", name, i)
+		}
+		if err := validateFields(set, path, where); err != nil {
+			return err
+		}
+		for j := range i {
+			if !slices.ContainsFunc(sets[j], func(f string) bool { return !slices.Contains(set, f) }) {
+				return fmt.Errorf(
+					"[앱 설정 오류] %s: 앱 %q 의 required[%d] 가 required[%d] 를 포함해서 선택될 수 없습니다\n"+
+						"       넘긴 필드로 모두 채워지는 첫 조합이 쓰이므로, 넓은 조합을 앞에 두세요",
+					path, name, i, j)
+			}
 		}
 	}
 	return nil

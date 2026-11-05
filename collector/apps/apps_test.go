@@ -36,18 +36,18 @@ func TestLoadValid(t *testing.T) {
 	if !ok {
 		t.Fatal("ai-stt 를 못 찾았다")
 	}
-	if len(stt.Required) != 1 || stt.Required[0] != "rid" {
+	if len(stt.Required) != 1 || strings.Join(stt.Required[0], ",") != "rid" {
 		t.Errorf("ai-stt 의 required 가 [rid] 가 아니다: %v", stt.Required)
 	}
 
 	fwd, _ := cfg.Find("forwarder")
 	// required 는 순서가 의미를 가진다 — 원격에서 grep 을 이 순서로 이어붙인다.
 	want := []string{"stream_key", "session_id", "node_id"}
-	if len(fwd.Required) != len(want) {
-		t.Fatalf("forwarder 의 required 개수가 %d (기대 %d)", len(fwd.Required), len(want))
+	if len(fwd.Required) != 1 || len(fwd.Required[0]) != len(want) {
+		t.Fatalf("forwarder 의 required 가 %v (기대 %v)", fwd.Required, want)
 	}
 	for i := range want {
-		if fwd.Required[i] != want[i] {
+		if fwd.Required[0][i] != want[i] {
 			t.Errorf("required 순서가 %v (기대 %v)", fwd.Required, want)
 			break
 		}
@@ -169,4 +169,48 @@ func TestLoadRedact(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoadRequiredSets 는 required 의 대안 조합 형태를 고정한다.
+// 기존 ["a","b"] 는 조합 하나로 읽혀야 한다 — 기존 apps.json 을 고치지 않아도 된다.
+func TestLoadRequiredSets(t *testing.T) {
+	t.Run("조합 여럿을 순서대로 읽는다", func(t *testing.T) {
+		cfg, err := Load(write(t, `{"apps":{"subtitle":{"required":[["uuid"],["user_key","trace_id"]]}}}`))
+		if err != nil {
+			t.Fatalf("로드 실패: %v", err)
+		}
+		app, _ := cfg.Find("subtitle")
+		if len(app.Required) != 2 ||
+			strings.Join(app.Required[0], ",") != "uuid" ||
+			strings.Join(app.Required[1], ",") != "user_key,trace_id" {
+			t.Errorf("required 가 %v", app.Required)
+		}
+		if got := strings.Join(app.Required.Fields(), ","); got != "uuid,user_key,trace_id" {
+			t.Errorf("Fields 가 %q", got)
+		}
+	})
+
+	cases := map[string]string{
+		"빈 조합":               `{"apps":{"x":{"required":[[]]}}}`,
+		"뒤에 빈 조합":            `{"apps":{"x":{"required":[["a"],[]]}}}`,
+		"조합 안 중복":            `{"apps":{"x":{"required":[["a","a"]]}}}`,
+		"조합 안 빈 이름":          `{"apps":{"x":{"required":[["a"],[" "]]}}}`,
+		"형태 혼합":              `{"apps":{"x":{"required":["a",["b"]]}}}`,
+		"앞 조합을 포함":           `{"apps":{"x":{"required":[["a"],["a","b"]]}}}`,
+		"같은 조합 반복":           `{"apps":{"x":{"required":[["a"],["a"]]}}}`,
+		"두 번째 조합과 redact 겹침": `{"apps":{"x":{"required":[["a"],["b"]],"redact":{"fields":["b"]}}}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, body)); err == nil {
+				t.Error("거부되어야 하는 설정이 통과했다")
+			}
+		})
+	}
+
+	t.Run("뒤 조합이 앞 조합보다 좁으면 허용", func(t *testing.T) {
+		if _, err := Load(write(t, `{"apps":{"x":{"required":[["a","b"],["a"]]}}}`)); err != nil {
+			t.Errorf("유효한 설정이 거부됐다: %v", err)
+		}
+	})
 }

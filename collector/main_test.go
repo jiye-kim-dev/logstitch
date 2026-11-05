@@ -12,14 +12,16 @@ import (
 	"github.com/jiye-kim-dev/logstitch/collector/inventory"
 )
 
-// testApps 는 두 종류의 앱을 흉내낸다 — 필수 필드 하나, 그리고 셋.
+// testApps 는 세 종류의 앱을 흉내낸다 — 필수 필드 하나, 셋, 그리고 대안 조합.
 var testApps = &apps.Config{
 	Apps: map[string]apps.App{
-		"ai-stt":    {Required: []string{"rid"}},
-		"forwarder": {Required: []string{"stream_key", "session_id", "node_id"}},
+		"ai-stt":    {Required: apps.RequiredSets{{"rid"}}},
+		"forwarder": {Required: apps.RequiredSets{{"stream_key", "session_id", "node_id"}}},
+		// uuid 또는 user_id 중 하나로 검색하는 앱.
+		"subtitle": {Required: apps.RequiredSets{{"uuid"}, {"user_id"}}},
 		// 영역마다 앵커가 갈리는 앱 — JSON 로그는 rid, lal 영역은 plain 이라 sess.
 		"mixed": {
-			Required: []string{"rid"},
+			Required: apps.RequiredSets{{"rid"}},
 			Areas:    map[string]apps.AreaRule{"lal": {Required: []string{"sess"}}},
 		},
 	},
@@ -713,4 +715,69 @@ func TestMultiValueField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRequiredAlternatives 는 required 대안 조합을 고정한다.
+// 모두 채워지는 첫 조합이 앵커가 되고, 나머지 필드는 추가 AND 조건이 된다.
+func TestRequiredAlternatives(t *testing.T) {
+	cases := []struct {
+		name       string
+		fields     stringList
+		noRequired bool
+		want       []string
+	}{
+		{"첫 조합만 줌", stringList{"uuid=U"}, false, []string{"uuid=U"}},
+		{"둘째 조합만 줌", stringList{"user_id=X"}, false, []string{"user_id=X"}},
+		{"둘 다 주면 첫 조합이 앵커, 나머지는 AND", stringList{"user_id=X", "uuid=U"}, false,
+			[]string{"uuid=U", "user_id=X"}},
+		{"--no-required 면 선언된 필드가 앞", stringList{"fn=F", "user_id=X"}, true,
+			[]string{"user_id=X", "fn=F"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := build(t, args{app: "subtitle", env: "prod",
+				fields: tc.fields, noRequired: tc.noRequired})
+			if err != nil {
+				t.Fatalf("예상치 못한 오류: %v", err)
+			}
+			if got := criteriaOf(req); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("조건이 %v (기대 %v)", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("어느 조합도 못 채우면 조합마다 예시를 보여준다", func(t *testing.T) {
+		_, err := build(t, args{app: "subtitle", env: "prod", fields: stringList{"usr_id=X"}})
+		if err == nil {
+			t.Fatal("필수 조합 없이 통과했다")
+		}
+		for _, want := range []string{"uuid", "user_id", "--field uuid=", "--field user_id="} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("에러에 %q 가 없다: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("고른 조합 안에서 다중 값은 같은 단계 OR", func(t *testing.T) {
+		req, err := build(t, args{app: "subtitle", env: "prod",
+			fields: stringList{"user_id=X1", "user_id=X2"},
+			from:   "2026-10-26T02:00", to: "2026-10-26T02:30"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Criteria) != 1 || strings.Join(req.Criteria[0].Values, ",") != "X1,X2" {
+			t.Errorf("조건 = %+v", req.Criteria)
+		}
+	})
+
+	t.Run("--after 는 앵커 하나면 허용, 둘 다 주면 거부", func(t *testing.T) {
+		if _, err := build(t, args{app: "subtitle", env: "prod",
+			fields: stringList{"user_id=X"}, after: 20}); err != nil {
+			t.Errorf("조건이 하나인데 거부됐다: %v", err)
+		}
+		if _, err := build(t, args{app: "subtitle", env: "prod",
+			fields: stringList{"user_id=X", "uuid=U"}, after: 20}); err == nil {
+			t.Error("조건이 둘인데 --after 가 통과했다")
+		}
+	})
 }

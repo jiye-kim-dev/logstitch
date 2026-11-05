@@ -31,11 +31,15 @@
       "properties": {
         "_comment": { "$ref": "#/definitions/comment" },
         "required": {
-          "type": "array",
-          "description": "이 앱을 조회할 때 반드시 넘겨야 하는 필드. 순서가 의미를 가진다 — 원격에서 grep 을 이 순서로 이어붙이므로 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 전송량이 줄어든다.",
-          "items": { "type": "string", "minLength": 1 },
-          "minItems": 1,
-          "uniqueItems": true
+          "description": "이 앱을 조회할 때 넘겨야 하는 필드. [\"a\",\"b\"] 는 조합 하나, [[\"uuid\"],[\"user_id\"]] 는 조합 여럿이다 (조합끼리 OR — 넘긴 필드로 모두 채워지는 첫 조합을 쓰고, 나머지 필드는 추가 AND 조건이 된다. 앞 조합을 포함하는 조합은 선택될 수 없어 거부된다). 조합 안의 순서가 의미를 가진다 — 원격에서 grep 을 이 순서로 이어붙이므로 가장 선택적인(결과가 적게 나오는) 필드를 앞에 두면 전송량이 줄어든다.",
+          "oneOf": [
+            { "$ref": "#/definitions/fieldSet" },
+            {
+              "type": "array",
+              "items": { "$ref": "#/definitions/fieldSet" },
+              "minItems": 1
+            }
+          ]
         },
         "areas": {
           "type": "object",
@@ -51,6 +55,12 @@
           "description": "사람용 메모. 코드는 쓰지 않는다."
         }
       }
+    },
+    "fieldSet": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
     },
     "redact": {
       "type": "object",
