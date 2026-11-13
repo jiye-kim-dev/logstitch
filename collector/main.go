@@ -40,6 +40,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -533,7 +534,10 @@ func newCriterion(field string, values []string) collect.Criterion {
 	return c
 }
 
-// orderCriteria 는 앱의 required 를 모두 받았는지 확인하고 순서를 정한다.
+// orderCriteria 는 앱의 required 조합 중 하나를 모두 받았는지 확인하고 순서를 정한다.
+//
+// 조합이 여럿이면 모두 채워지는 첫 조합이 앵커가 된다. 고르지 않은 조합의
+// 필드는 아래 추가 조건 규칙을 그대로 따른다 (AND).
 //
 // required 순서를 앞에 두는 이유는 원격에서 grep 을 그 순서로 이어붙이기
 // 때문이다 — 선택적인 필드를 앞에 적어두면 뒤쪽 grep 이 훑을 양이 줄어든다.
@@ -548,35 +552,28 @@ func orderCriteria(
 	noRequired bool,
 ) ([]collect.Criterion, error) {
 
-	var missing []string
-	criteria := make([]collect.Criterion, 0, len(given))
-
-	for _, field := range def.Required {
-		values, ok := given[field]
-		if !ok {
-			missing = append(missing, field)
-			continue
+	// --no-required 로 어느 조합도 못 채웠으면 모든 조합의 필드를 선언 순서로
+	// 펼쳐, 준 것만 앞에 둔다.
+	anchor, ok := pickRequiredSet(def.Required, given)
+	if !ok {
+		if !noRequired {
+			return nil, missingRequiredError(app, def.Required, given)
 		}
-		criteria = append(criteria, newCriterion(field, values))
+		anchor = def.Required.Fields()
 	}
 
-	if len(missing) > 0 && !noRequired {
-		return nil, fmt.Errorf(
-			"앱 %q 의 필수 필드가 빠졌습니다: %s\n"+
-				"       필요한 필드 전체: %s\n"+
-				"       예: %s",
-			app, strings.Join(missing, ", "),
-			strings.Join(def.Required, ", "),
-			exampleUsage(app, def.Required))
+	criteria := make([]collect.Criterion, 0, len(given))
+	required := make(map[string]bool, len(anchor))
+	for _, field := range anchor {
+		required[field] = true
+		if values, ok := given[field]; ok {
+			criteria = append(criteria, newCriterion(field, values))
+		}
 	}
 
-	// required 에 없는 필드는 선언 순서를 알 수 없으므로 준 순서대로 뒤에 붙인다.
+	// 앵커에 없는 필드는 선언 순서를 알 수 없으므로 이름순으로 뒤에 붙인다.
 	// 단 영역 규칙에 선언된 필드는 뺀다 — 그 필드는 해당 영역 전용이라,
 	// 모든 영역에 교집합으로 붙이면 그 필드가 없는 영역이 통째로 0줄이 된다.
-	required := make(map[string]bool, len(def.Required))
-	for _, field := range def.Required {
-		required[field] = true
-	}
 	owned := def.AreaFields()
 	extra := make([]string, 0, len(given))
 	for field := range given {
@@ -590,6 +587,43 @@ func orderCriteria(
 	}
 
 	return criteria, nil
+}
+
+// pickRequiredSet 은 given 으로 모두 채워지는 첫 조합을 고른다.
+func pickRequiredSet(sets apps.RequiredSets, given map[string][]string) ([]string, bool) {
+	for _, set := range sets {
+		if !slices.ContainsFunc(set, func(f string) bool { _, ok := given[f]; return !ok }) {
+			return set, true
+		}
+	}
+	return nil, false
+}
+
+// missingRequiredError 는 조합이 하나면 빠진 필드를, 여럿이면 가능한 조합과
+// 조합별 예시를 알려준다.
+func missingRequiredError(app string, sets apps.RequiredSets, given map[string][]string) error {
+	if len(sets) == 1 {
+		var missing []string
+		for _, field := range sets[0] {
+			if _, ok := given[field]; !ok {
+				missing = append(missing, field)
+			}
+		}
+		return fmt.Errorf(
+			"앱 %q 의 필수 필드가 빠졌습니다: %s\n"+
+				"       필요한 필드 전체: %s\n"+
+				"       예: %s",
+			app, strings.Join(missing, ", "),
+			strings.Join(sets[0], ", "),
+			exampleUsage(app, sets[0]))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "앱 %q 의 필수 필드가 빠졌습니다. 다음 조합 중 하나가 필요합니다:", app)
+	for _, set := range sets {
+		fmt.Fprintf(&b, "\n       [%s]  예: %s", strings.Join(set, ", "), exampleUsage(app, set))
+	}
+	return errors.New(b.String())
 }
 
 // pickAreaCriteria 는 영역 규칙(apps.json 의 areas)에 해당하는 조건을 고른다.

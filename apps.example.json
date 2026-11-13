@@ -5,8 +5,9 @@
   ],
   "apps": {
     "subtitle": {
-      "required": ["uuid"],
-      "view": { "default": "flow" }
+      "required": [["uuid"], ["user_id"]],
+      "view": { "default": "flow" },
+      "_comment": "uuid 또는 user_id 중 하나로 검색한다. 둘 다 주면 uuid 가 앵커, user_id 는 추가 AND 조건."
     },
     "split": {
       "required": ["user_key"],
